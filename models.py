@@ -1,10 +1,12 @@
 from pydantic import BaseModel, Field
 
+
 class GrowthRequest(BaseModel):
     revenue_growth_pct: float
     operating_profit_growth_pct: float
     eps_growth_pct: float
     operating_margin_pct: float
+
 
 class ChangeRequest(BaseModel):
     latest_growth_pct: float
@@ -12,11 +14,13 @@ class ChangeRequest(BaseModel):
     margin_change_points: float
     guidance_revision_pct: float = 0
 
+
 class MispricingRequest(BaseModel):
     fair_value: float = Field(gt=0)
     market_price: float = Field(gt=0)
     growth_score: float = Field(ge=0, le=100)
     data_coverage_pct: float = Field(default=100, ge=0, le=100)
+
 
 class DCFRequest(BaseModel):
     base_free_cash_flow: float
