@@ -1,233 +1,214 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
 import yfinance as yf
 
 
-def _num(value: Any) -> float | None:
+def _first_existing(df: pd.DataFrame, names: list[str], col):
+    if df is None or df.empty:
+        return None
+    for name in names:
+        if name in df.index:
+            value = df.loc[name, col]
+            if pd.notna(value):
+                try:
+                    return float(value)
+                except Exception:
+                    return None
+    return None
+
+
+def _safe_pct_change(current, previous):
+    if current is None or previous in (None, 0):
+        return None
+    return (current / previous - 1) * 100
+
+
+def _safe_margin(profit, revenue):
+    if profit is None or revenue in (None, 0):
+        return None
+    return profit / revenue * 100
+
+
+def _safe_float(value):
     try:
         if value is None or pd.isna(value):
             return None
         return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _row(df: pd.DataFrame, names: list[str]) -> pd.Series | None:
-    if df is None or df.empty:
-        return None
-
-    for name in names:
-        if name in df.index:
-            value = df.loc[name]
-            if isinstance(value, pd.DataFrame):
-                value = value.iloc[0]
-            if isinstance(value, pd.Series):
-                return value
-    return None
-
-
-def _ordered_values(series: pd.Series | None) -> list[float | None]:
-    if series is None or series.empty:
-        return []
-
-    try:
-        ordered = series.reindex(sorted(series.index, reverse=True))
     except Exception:
-        ordered = series
-
-    return [_num(v) for v in ordered.tolist()]
-
-
-def _growth(current: float | None, previous: float | None) -> float | None:
-    if current is None or previous in (None, 0):
         return None
-    return (current / previous - 1.0) * 100.0
 
 
-def _latest_price(stock: yf.Ticker) -> float | None:
+def _latest_price(t: yf.Ticker, info: dict[str, Any]):
+    for key in ("currentPrice", "regularMarketPrice"):
+        v = _safe_float(info.get(key))
+        if v is not None and v > 0:
+            return v
     try:
-        price = _num(stock.fast_info.get("last_price"))
-        if price is not None and price > 0:
-            return price
-    except Exception:
-        pass
-
-    try:
-        hist = stock.history(period="5d", auto_adjust=False)
+        hist = t.history(period="5d", auto_adjust=False)
         if not hist.empty:
-            price = _num(hist["Close"].dropna().iloc[-1])
-            if price is not None and price > 0:
-                return price
+            v = _safe_float(hist["Close"].dropna().iloc[-1])
+            if v is not None and v > 0:
+                return v
     except Exception:
         pass
-
     return None
 
 
-def _free_cash_flow(cashflow: pd.DataFrame) -> float | None:
-    direct = _ordered_values(_row(cashflow, ["Free Cash Flow"]))
-    if direct and direct[0] is not None:
-        return direct[0]
-
-    cfo = _ordered_values(
-        _row(
-            cashflow,
-            [
-                "Operating Cash Flow",
-                "Total Cash From Operating Activities",
-            ],
-        )
+def _company_name(info: dict[str, Any], symbol: str):
+    return (
+        info.get("longName")
+        or info.get("shortName")
+        or info.get("displayName")
+        or symbol
     )
-    capex = _ordered_values(_row(cashflow, ["Capital Expenditure", "Capital Expenditures"]))
-
-    if cfo and capex and cfo[0] is not None and capex[0] is not None:
-        # yfinanceでは設備投資がマイナス表示のことが多いので加算する。
-        return cfo[0] + capex[0] if capex[0] < 0 else cfo[0] - capex[0]
-    return None
 
 
-def _balance_latest(balance: pd.DataFrame, names: list[str]) -> float | None:
-    values = _ordered_values(_row(balance, names))
-    return values[0] if values else None
-
-
-def get_company_snapshot(ticker: str) -> dict[str, Any] | None:
+def get_company_snapshot(ticker: str):
     symbol = f"{ticker}.T"
+    t = yf.Ticker(symbol)
 
     try:
-        stock = yf.Ticker(symbol)
-        income = stock.financials
-        cashflow = stock.cashflow
-        balance = stock.balance_sheet
+        info = t.info or {}
     except Exception:
+        info = {}
+
+    try:
+        financials = t.financials
+    except Exception:
+        financials = pd.DataFrame()
+
+    try:
+        cashflow = t.cashflow
+    except Exception:
+        cashflow = pd.DataFrame()
+
+    if financials is None or financials.empty or len(financials.columns) < 2:
         return None
 
-    if income is None or income.empty:
-        return None
+    cols = list(financials.columns)
+    latest_col = cols[0]
+    previous_col = cols[1]
+    older_col = cols[2] if len(cols) >= 3 else None
 
-    revenue = _ordered_values(_row(income, ["Total Revenue", "Operating Revenue"]))
-    operating_income = _ordered_values(_row(income, ["Operating Income"]))
-    eps = _ordered_values(_row(income, ["Diluted EPS", "Basic EPS"]))
+    revenue_names = ["Total Revenue", "Operating Revenue"]
+    op_profit_names = ["Operating Income", "Operating Profit"]
+    net_income_names = ["Net Income", "Net Income Common Stockholders"]
+    diluted_eps_names = ["Diluted EPS", "Basic EPS"]
 
-    revenue_growth = _growth(
-        revenue[0] if len(revenue) > 0 else None,
-        revenue[1] if len(revenue) > 1 else None,
-    )
-    op_growth_latest = _growth(
-        operating_income[0] if len(operating_income) > 0 else None,
-        operating_income[1] if len(operating_income) > 1 else None,
-    )
-    op_growth_previous = _growth(
-        operating_income[1] if len(operating_income) > 1 else None,
-        operating_income[2] if len(operating_income) > 2 else None,
-    )
-    eps_growth = _growth(
-        eps[0] if len(eps) > 0 else None,
-        eps[1] if len(eps) > 1 else None,
-    )
+    rev_latest = _first_existing(financials, revenue_names, latest_col)
+    rev_prev = _first_existing(financials, revenue_names, previous_col)
+    rev_older = _first_existing(financials, revenue_names, older_col) if older_col is not None else None
 
-    latest_revenue = revenue[0] if len(revenue) > 0 else None
-    previous_revenue = revenue[1] if len(revenue) > 1 else None
-    latest_op = operating_income[0] if len(operating_income) > 0 else None
-    previous_op = operating_income[1] if len(operating_income) > 1 else None
+    op_latest = _first_existing(financials, op_profit_names, latest_col)
+    op_prev = _first_existing(financials, op_profit_names, previous_col)
+    op_older = _first_existing(financials, op_profit_names, older_col) if older_col is not None else None
 
-    latest_margin = (
-        latest_op / latest_revenue * 100.0
-        if latest_op is not None and latest_revenue not in (None, 0)
-        else None
-    )
-    previous_margin = (
-        previous_op / previous_revenue * 100.0
-        if previous_op is not None and previous_revenue not in (None, 0)
-        else None
-    )
+    eps_latest = _first_existing(financials, diluted_eps_names, latest_col)
+    eps_prev = _first_existing(financials, diluted_eps_names, previous_col)
+
+    # EPS行が無い場合は純利益÷希薄化後株式数（取得できるときのみ）
+    shares = _safe_float(info.get("sharesOutstanding")) or _safe_float(info.get("impliedSharesOutstanding"))
+    if eps_latest is None or eps_prev is None:
+        ni_latest = _first_existing(financials, net_income_names, latest_col)
+        ni_prev = _first_existing(financials, net_income_names, previous_col)
+        if shares and shares > 0:
+            eps_latest = eps_latest if eps_latest is not None else (ni_latest / shares if ni_latest is not None else None)
+            eps_prev = eps_prev if eps_prev is not None else (ni_prev / shares if ni_prev is not None else None)
+
+    revenue_growth = _safe_pct_change(rev_latest, rev_prev)
+    operating_profit_growth = _safe_pct_change(op_latest, op_prev)
+    eps_growth = _safe_pct_change(eps_latest, eps_prev)
+
+    latest_margin = _safe_margin(op_latest, rev_latest)
+    previous_margin = _safe_margin(op_prev, rev_prev)
     margin_change = (
         latest_margin - previous_margin
         if latest_margin is not None and previous_margin is not None
         else None
     )
 
-    company_name = symbol
-    shares_outstanding = None
-    market_cap = None
-    try:
-        info = stock.info or {}
-        company_name = info.get("longName") or info.get("shortName") or symbol
-        shares_outstanding = _num(info.get("sharesOutstanding"))
-        market_cap = _num(info.get("marketCap"))
-    except Exception:
-        info = {}
+    previous_growth = _safe_pct_change(rev_prev, rev_older) if rev_older is not None else None
+    latest_growth = revenue_growth
 
-    if shares_outstanding is None:
-        try:
-            shares_outstanding = _num(stock.fast_info.get("shares"))
-        except Exception:
-            pass
-
-    cash = _balance_latest(
-        balance,
-        [
-            "Cash Cash Equivalents And Short Term Investments",
-            "Cash And Cash Equivalents",
-            "Cash",
-        ],
+    # 黒字→赤字を「大幅改善」と誤判定しないためのフラグ
+    sign_flip_penalty = bool(
+        op_latest is not None and op_prev is not None and op_latest < 0 <= op_prev
     )
-    total_debt = _balance_latest(balance, ["Total Debt"])
+
+    market_price = _latest_price(t, info)
+
+    # FCF: Yahoo FinanceのFree Cash Flow行を優先。なければ営業CF - 設備投資。
+    base_fcf = None
+    if cashflow is not None and not cashflow.empty and len(cashflow.columns) >= 1:
+        cf_col = list(cashflow.columns)[0]
+        base_fcf = _first_existing(cashflow, ["Free Cash Flow"], cf_col)
+        if base_fcf is None:
+            ocf = _first_existing(
+                cashflow,
+                ["Operating Cash Flow", "Total Cash From Operating Activities"],
+                cf_col,
+            )
+            capex = _first_existing(cashflow, ["Capital Expenditure", "Capital Expenditures"], cf_col)
+            if ocf is not None and capex is not None:
+                # yfinanceの設備投資は負値で入ることが多い
+                base_fcf = ocf + capex if capex < 0 else ocf - capex
+
+    cash = _safe_float(info.get("totalCash"))
+    debt = _safe_float(info.get("totalDebt"))
     net_debt = None
-    if total_debt is not None or cash is not None:
-        net_debt = (total_debt or 0.0) - (cash or 0.0)
+    if cash is not None or debt is not None:
+        net_debt = (debt or 0.0) - (cash or 0.0)
 
-    fcf = _free_cash_flow(cashflow)
-    market_price = _latest_price(stock)
-
-    fiscal_period = None
-    try:
-        if len(income.columns) > 0:
-            fiscal_period = pd.Timestamp(income.columns[0]).date().isoformat()
-    except Exception:
-        pass
-
-    fields_for_coverage = {
+    fields = {
         "revenue_growth_pct": revenue_growth,
-        "operating_profit_growth_pct": op_growth_latest,
+        "operating_profit_growth_pct": operating_profit_growth,
         "eps_growth_pct": eps_growth,
         "operating_margin_pct": latest_margin,
-        "previous_growth_pct": op_growth_previous,
+        "latest_growth_pct": latest_growth,
+        "previous_growth_pct": previous_growth,
         "margin_change_points": margin_change,
         "market_price": market_price,
-        "free_cash_flow": fcf,
+        "free_cash_flow": base_fcf,
         "net_debt": net_debt,
-        "shares_outstanding": shares_outstanding,
+        "shares_outstanding": shares,
     }
-    available = sum(v is not None for v in fields_for_coverage.values())
-    coverage = round(available / len(fields_for_coverage) * 100.0, 1)
-    missing_fields = [k for k, v in fields_for_coverage.items() if v is None]
+
+    missing_fields = [k for k, v in fields.items() if v is None]
+    coverage = round((len(fields) - len(missing_fields)) / len(fields) * 100, 1)
 
     return {
         "ticker": ticker,
         "symbol": symbol,
-        "company_name": company_name,
-        "fiscal_period": fiscal_period,
+        "company_name": _company_name(info, symbol),
+        "fiscal_period": str(latest_col.date()) if hasattr(latest_col, "date") else str(latest_col),
+        "comparison_period": {
+            "latest": str(latest_col.date()) if hasattr(latest_col, "date") else str(latest_col),
+            "previous": str(previous_col.date()) if hasattr(previous_col, "date") else str(previous_col),
+            "older": str(older_col.date()) if older_col is not None and hasattr(older_col, "date") else (str(older_col) if older_col is not None else None),
+        },
         "data_status": "external_yfinance",
         "data_source": "Yahoo Finance via yfinance",
-        "revenue_growth_pct": revenue_growth,
-        "operating_profit_growth_pct": op_growth_latest,
-        "eps_growth_pct": eps_growth,
-        "operating_margin_pct": latest_margin,
-        "latest_growth_pct": op_growth_latest,
-        "previous_growth_pct": op_growth_previous,
-        "margin_change_points": margin_change,
-        # yfinanceだけでは会社予想の上方修正率を安定取得できないため、欠損を明示する。
-        "guidance_revision_pct": None,
-        "guidance_revision_available": False,
-        "market_price": market_price,
-        "market_cap": market_cap,
-        "base_free_cash_flow": fcf,
-        "net_debt": net_debt,
-        "shares_outstanding": shares_outstanding,
+        "data_retrieved_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "data_coverage_pct": coverage,
         "missing_fields": missing_fields,
+        "market_price": market_price,
+        "metrics": {
+            "revenue_growth_pct": revenue_growth,
+            "operating_profit_growth_pct": operating_profit_growth,
+            "eps_growth_pct": eps_growth,
+            "operating_margin_pct": latest_margin,
+            "latest_growth_pct": latest_growth,
+            "previous_growth_pct": previous_growth,
+            "margin_change_points": margin_change,
+            "guidance_revision_pct": None,
+            "guidance_revision_available": False,
+            "sign_flip_penalty": sign_flip_penalty,
+            "free_cash_flow": base_fcf,
+            "net_debt": net_debt,
+            "shares_outstanding": shares,
+        },
     }

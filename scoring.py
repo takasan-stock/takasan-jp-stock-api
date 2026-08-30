@@ -1,6 +1,7 @@
 def _clamp(value, low=0, high=100):
     return max(low, min(high, value))
 
+
 def score_growth(req):
     revenue = _clamp(req.revenue_growth_pct / 30 * 100)
     op_profit = _clamp(req.operating_profit_growth_pct / 50 * 100)
@@ -19,12 +20,26 @@ def score_growth(req):
         },
     }
 
+
 def score_change(req):
     acceleration = req.latest_growth_pct - req.previous_growth_pct
 
-    acceleration_score = _clamp(50 + acceleration * 2.0)
-    margin_score = _clamp(50 + req.margin_change_points * 10.0)
-    guidance_score = _clamp(50 + req.guidance_revision_pct * 2.0)
+    # 0を中心に穏やかに評価。極端な前年比で100点に張り付きにくくする。
+    acceleration_score = _clamp(50 + acceleration * 1.25)
+    margin_score = _clamp(50 + req.margin_change_points * 6.0)
+
+    # 会社予想修正が取得できない場合は「修正なし」ではなく中立50点。
+    if req.guidance_revision_pct is None:
+        guidance_score = 50.0
+        guidance_available = False
+    else:
+        guidance_score = _clamp(50 + req.guidance_revision_pct * 2.0)
+        guidance_available = True
+
+    # 黒字→赤字などの符号反転で「改善」に見えてしまうケースを抑制。
+    if req.sign_flip_penalty:
+        acceleration_score = min(acceleration_score, 35.0)
+        margin_score = min(margin_score, 35.0)
 
     score = round(
         acceleration_score * 0.50
@@ -47,8 +62,11 @@ def score_change(req):
             "margin_change": round(margin_score, 1),
             "guidance_revision": round(guidance_score, 1),
         },
+        "guidance_available": guidance_available,
+        "sign_flip_penalty": req.sign_flip_penalty,
         "label": label,
     }
+
 
 def score_mispricing(req):
     upside_pct = (req.fair_value / req.market_price - 1) * 100
@@ -73,6 +91,7 @@ def score_mispricing(req):
         "upside_pct": round(upside_pct, 1),
         "label": label,
     }
+
 
 def run_dcf(req):
     r = req.discount_rate_pct / 100

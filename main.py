@@ -1,5 +1,4 @@
 import os
-from typing import Iterable
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,10 +7,9 @@ from models import GrowthRequest, ChangeRequest, MispricingRequest, DCFRequest
 from scoring import score_growth, score_change, score_mispricing, run_dcf
 from provider import get_company_snapshot
 
-
 app = FastAPI(
     title="たかさん日本株分析 v2 API",
-    version="0.3.0",
+    version="0.3.1",
     description="ChatGPT Sites 接続用の日本株分析API",
 )
 
@@ -30,7 +28,7 @@ app.add_middleware(
 def root():
     return {
         "name": "たかさん日本株分析 v2 API",
-        "version": "0.3.0",
+        "version": "0.3.1",
         "status": "ok",
         "docs": "/docs",
     }
@@ -38,7 +36,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.3.0"}
+    return {"status": "ok"}
 
 
 @app.post("/score/growth")
@@ -61,45 +59,8 @@ def dcf(req: DCFRequest):
     return run_dcf(req)
 
 
-def _missing(data: dict, keys: Iterable[str]) -> list[str]:
-    return [key for key in keys if data.get(key) is None]
-
-
-def _dcf_growth_assumption(data: dict) -> float:
-    candidates = [
-        data.get("revenue_growth_pct"),
-        data.get("operating_profit_growth_pct"),
-    ]
-    values = [float(v) for v in candidates if v is not None]
-    if not values:
-        return 0.0
-
-    # 単年度の高成長をそのまま永続化しないため、5年DCF用は -5%〜15% に制限。
-    raw = sum(values) / len(values)
-    return round(max(-5.0, min(15.0, raw)), 2)
-
-
-def _composite_score(parts: list[tuple[float, float]]) -> float | None:
-    if not parts:
-        return None
-    weight_sum = sum(weight for _, weight in parts)
-    if weight_sum <= 0:
-        return None
-    return round(sum(score * weight for score, weight in parts) / weight_sum, 1)
-
-
-def _rank(score: float | None) -> str | None:
-    if score is None:
-        return None
-    if score >= 90:
-        return "S"
-    if score >= 80:
-        return "A"
-    if score >= 65:
-        return "B"
-    if score >= 50:
-        return "C"
-    return "D"
+def _missing_required(metrics, names):
+    return [name for name in names if metrics.get(name) is None]
 
 
 @app.get("/analyze/{ticker}")
@@ -112,8 +73,10 @@ def analyze(ticker: str):
     if data is None:
         raise HTTPException(
             status_code=404,
-            detail="実データを取得できませんでした。銘柄コードまたは外部データ接続を確認してください。",
+            detail="この銘柄の財務データを取得できませんでした。架空値は生成しません。",
         )
+
+    m = data["metrics"]
 
     growth_required = [
         "revenue_growth_pct",
@@ -121,16 +84,16 @@ def analyze(ticker: str):
         "eps_growth_pct",
         "operating_margin_pct",
     ]
-    growth_missing = _missing(data, growth_required)
+    growth_missing = _missing_required(m, growth_required)
 
     growth_result = None
     if not growth_missing:
         growth_result = score_growth(
             GrowthRequest(
-                revenue_growth_pct=data["revenue_growth_pct"],
-                operating_profit_growth_pct=data["operating_profit_growth_pct"],
-                eps_growth_pct=data["eps_growth_pct"],
-                operating_margin_pct=data["operating_margin_pct"],
+                revenue_growth_pct=m["revenue_growth_pct"],
+                operating_profit_growth_pct=m["operating_profit_growth_pct"],
+                eps_growth_pct=m["eps_growth_pct"],
+                operating_margin_pct=m["operating_margin_pct"],
             )
         )
 
@@ -139,94 +102,118 @@ def analyze(ticker: str):
         "previous_growth_pct",
         "margin_change_points",
     ]
-    change_missing = _missing(data, change_required)
+    change_missing = _missing_required(m, change_required)
 
     change_result = None
     if not change_missing:
-        # 会社予想修正率が取得できない場合はChange Score内部だけ中立値0を使う。
-        # JSON上では guidance_revision_available=False として欠損を明示する。
         change_result = score_change(
             ChangeRequest(
-                latest_growth_pct=data["latest_growth_pct"],
-                previous_growth_pct=data["previous_growth_pct"],
-                margin_change_points=data["margin_change_points"],
-                guidance_revision_pct=data.get("guidance_revision_pct") or 0.0,
+                latest_growth_pct=m["latest_growth_pct"],
+                previous_growth_pct=m["previous_growth_pct"],
+                margin_change_points=m["margin_change_points"],
+                guidance_revision_pct=m.get("guidance_revision_pct"),
+                sign_flip_penalty=bool(m.get("sign_flip_penalty", False)),
             )
         )
 
     dcf_result = None
     dcf_assumptions = None
-    if (
-        data.get("base_free_cash_flow") is not None
-        and data["base_free_cash_flow"] > 0
-        and data.get("shares_outstanding") is not None
-        and data["shares_outstanding"] > 0
-    ):
-        growth_assumption = _dcf_growth_assumption(data)
+    dcf_note = None
+
+    fcf = m.get("free_cash_flow")
+    shares = m.get("shares_outstanding")
+    net_debt = m.get("net_debt")
+
+    # 取得できない場合やFCFがマイナスの場合は、無理にDCFを作らない。
+    if fcf is not None and fcf > 0 and shares is not None and shares > 0:
+        growth_for_dcf = 5.0
+        if m.get("revenue_growth_pct") is not None:
+            growth_for_dcf = max(-5.0, min(15.0, m["revenue_growth_pct"]))
+
         dcf_assumptions = {
-            "base_free_cash_flow": data["base_free_cash_flow"],
-            "growth_rate_pct": growth_assumption,
+            "base_free_cash_flow": fcf,
+            "growth_rate_pct": round(growth_for_dcf, 2),
             "discount_rate_pct": 8.0,
-            "terminal_growth_rate_pct": 2.0,
+            "terminal_growth_rate_pct": 1.0,
             "years": 5,
-            "net_debt": data.get("net_debt") or 0.0,
-            "shares_outstanding": data["shares_outstanding"],
+            "net_debt": net_debt or 0.0,
+            "shares_outstanding": shares,
+            "assumption_policy": "自動計算用の暫定仮定。投資判断時は個別に見直してください。",
         }
-        dcf_result = run_dcf(DCFRequest(**dcf_assumptions))
+
+        dcf_result = run_dcf(DCFRequest(**{
+            k: v for k, v in dcf_assumptions.items()
+            if k != "assumption_policy"
+        }))
+    else:
+        dcf_note = "正のFCFまたは発行株式数を取得できないためDCFを計算していません。"
 
     mispricing_result = None
-    fair_value = None
-    if dcf_result and not dcf_result.get("error"):
-        fair_value = dcf_result.get("fair_value_per_share")
-
     if (
-        fair_value is not None
-        and fair_value > 0
+        dcf_result
+        and not dcf_result.get("error")
+        and dcf_result.get("fair_value_per_share") is not None
         and data.get("market_price") is not None
-        and data["market_price"] > 0
         and growth_result is not None
     ):
         mispricing_result = score_mispricing(
             MispricingRequest(
-                fair_value=fair_value,
+                fair_value=dcf_result["fair_value_per_share"],
                 market_price=data["market_price"],
                 growth_score=growth_result["score"],
-                data_coverage_pct=data.get("data_coverage_pct", 0),
+                data_coverage_pct=data["data_coverage_pct"],
             )
         )
 
-    composite_parts = []
-    if growth_result is not None:
-        composite_parts.append((growth_result["score"], 0.50))
-    if change_result is not None:
-        composite_parts.append((change_result["score"], 0.30))
-    if mispricing_result is not None:
-        composite_parts.append((mispricing_result["score"], 0.20))
+    score_items = []
+    score_weights = []
 
-    ai_score = _composite_score(composite_parts)
+    if growth_result is not None:
+        score_items.append(growth_result["score"])
+        score_weights.append(0.50)
+
+    if change_result is not None:
+        score_items.append(change_result["score"])
+        score_weights.append(0.30)
+
+    if mispricing_result is not None:
+        score_items.append(mispricing_result["score"])
+        score_weights.append(0.20)
+
+    if score_items:
+        total_weight = sum(score_weights)
+        ai_score = round(
+            sum(score * weight for score, weight in zip(score_items, score_weights)) / total_weight,
+            1,
+        )
+    else:
+        ai_score = None
+
+    if ai_score is None:
+        rank = None
+    elif ai_score >= 90:
+        rank = "S"
+    elif ai_score >= 80:
+        rank = "A"
+    elif ai_score >= 65:
+        rank = "B"
+    elif ai_score >= 50:
+        rank = "C"
+    else:
+        rank = "D"
 
     return {
         "ticker": ticker,
-        "company_name": data.get("company_name"),
-        "fiscal_period": data.get("fiscal_period"),
-        "data_status": data.get("data_status"),
-        "data_source": data.get("data_source"),
-        "data_coverage_pct": data.get("data_coverage_pct"),
-        "missing_fields": data.get("missing_fields", []),
-        "market_price": data.get("market_price"),
-        "market_cap": data.get("market_cap"),
-        "metrics": {
-            "revenue_growth_pct": data.get("revenue_growth_pct"),
-            "operating_profit_growth_pct": data.get("operating_profit_growth_pct"),
-            "eps_growth_pct": data.get("eps_growth_pct"),
-            "operating_margin_pct": data.get("operating_margin_pct"),
-            "margin_change_points": data.get("margin_change_points"),
-            "guidance_revision_pct": data.get("guidance_revision_pct"),
-            "guidance_revision_available": data.get("guidance_revision_available", False),
-            "free_cash_flow": data.get("base_free_cash_flow"),
-            "net_debt": data.get("net_debt"),
-            "shares_outstanding": data.get("shares_outstanding"),
-        },
+        "company_name": data["company_name"],
+        "fiscal_period": data["fiscal_period"],
+        "comparison_period": data.get("comparison_period"),
+        "data_status": data["data_status"],
+        "data_source": data["data_source"],
+        "data_retrieved_at_utc": data.get("data_retrieved_at_utc"),
+        "data_coverage_pct": data["data_coverage_pct"],
+        "missing_fields": data["missing_fields"],
+        "market_price": data["market_price"],
+        "metrics": m,
         "growth": {
             "result": growth_result,
             "missing_fields": growth_missing,
@@ -235,28 +222,28 @@ def analyze(ticker: str):
             "result": change_result,
             "missing_fields": change_missing,
             "guidance_note": (
-                None
-                if data.get("guidance_revision_available")
-                else "会社予想修正率は取得できていないため、Change Score内部では中立値0を使用。"
+                None if m.get("guidance_revision_available")
+                else "会社予想修正率は取得できていないため、Change Score内部では中立値を使用。"
             ),
         },
         "dcf": {
             "result": dcf_result,
             "assumptions": dcf_assumptions,
-            "note": (
-                "DCFはYahoo Finance経由のFCF等を使った簡易モデル。決算資料・有報での再確認を推奨。"
-                if dcf_result is not None
-                else "正のFCFまたは発行株式数を取得できないためDCFを計算していません。"
-            ),
+            "note": dcf_note,
         },
         "mispricing": mispricing_result,
         "ai_score": ai_score,
-        "rank": _rank(ai_score),
+        "rank": rank,
         "score_weights": {
             "growth": 0.50,
             "change": 0.30,
             "mispricing": 0.20,
             "note": "取得できたスコアだけで重みを再正規化します。",
+        },
+        "quality_flags": {
+            "sign_flip_penalty": bool(m.get("sign_flip_penalty", False)),
+            "guidance_revision_available": bool(m.get("guidance_revision_available", False)),
+            "dcf_available": dcf_result is not None,
         },
         "note": "外部データに欠損がある場合は架空値を生成せず、missing_fieldsに明示します。",
     }
