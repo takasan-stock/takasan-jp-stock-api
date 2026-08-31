@@ -10,7 +10,8 @@ class ChangeRequest(BaseModel):
     latest_growth_pct: float
     previous_growth_pct: float
     margin_change_points: float
-    guidance_revision_pct: float = 0
+    guidance_revision_pct: float | None = None
+    sign_flip_penalty: bool = False
 
 class MispricingRequest(BaseModel):
     fair_value: float = Field(gt=0)
