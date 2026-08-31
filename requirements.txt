@@ -3,6 +3,3 @@ uvicorn[standard]==0.35.0
 pydantic==2.11.7
 yfinance
 pandas
-requests
-openpyxl
-xlrd
