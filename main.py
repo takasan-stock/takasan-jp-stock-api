@@ -8,14 +8,15 @@ from scoring import (
     score_change,
     score_mispricing,
     run_dcf,
+    build_auto_dcf_assumptions,
     run_dcf_scenarios,
 )
 from provider import get_company_snapshot
 
 app = FastAPI(
     title="たかさん日本株分析 v2 API",
-    version="0.5.1",
-    description="Growth / Change / DCF 3シナリオ / Mispricing 日本株分析API",
+    version="0.6.0",
+    description="銘柄別・自動DCF前提生成 + Growth / Change / Mispricing 日本株分析API",
 )
 
 origins = [x.strip() for x in os.getenv("ALLOWED_ORIGINS", "*").split(",") if x.strip()]
@@ -32,7 +33,7 @@ app.add_middleware(
 def root():
     return {
         "name": "たかさん日本株分析 v2 API",
-        "version": "0.5.1",
+        "version": "0.6.0",
         "status": "ok",
         "docs": "/docs",
     }
@@ -40,7 +41,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.5.1"}
+    return {"status": "ok", "version": "0.6.0"}
 
 
 @app.post("/score/growth")
@@ -82,13 +83,10 @@ def analyze(ticker: str):
 
     m = data["metrics"]
 
-    growth_required = [
-        "revenue_growth_pct",
-        "operating_profit_growth_pct",
-        "eps_growth_pct",
-        "operating_margin_pct",
-    ]
-    growth_missing = _missing_required(m, growth_required)
+    growth_missing = _missing_required(
+        m,
+        ["revenue_growth_pct", "operating_profit_growth_pct", "eps_growth_pct", "operating_margin_pct"],
+    )
     growth_result = None
     if not growth_missing:
         growth_result = score_growth(
@@ -100,12 +98,10 @@ def analyze(ticker: str):
             )
         )
 
-    change_required = [
-        "latest_growth_pct",
-        "previous_growth_pct",
-        "margin_change_points",
-    ]
-    change_missing = _missing_required(m, change_required)
+    change_missing = _missing_required(
+        m,
+        ["latest_growth_pct", "previous_growth_pct", "margin_change_points"],
+    )
     change_result = None
     if not change_missing:
         change_result = score_change(
@@ -124,13 +120,11 @@ def analyze(ticker: str):
     market_price = data.get("market_price")
 
     dcf_missing_fields = [
-        name
-        for name, value in {
+        name for name, value in {
             "free_cash_flow": fcf,
             "net_debt": net_debt,
             "shares_outstanding": shares,
-        }.items()
-        if value is None
+        }.items() if value is None
     ]
 
     dcf_payload = {
@@ -141,28 +135,33 @@ def analyze(ticker: str):
     }
     mispricing_result = None
 
-    if not dcf_missing_fields and fcf > 0 and shares > 0:
+    if not dcf_missing_fields and fcf > 0 and shares > 0 and growth_result is not None:
+        auto_assumptions = build_auto_dcf_assumptions(
+            metrics=m,
+            growth_score=growth_result["score"],
+            data_coverage_pct=data["data_coverage_pct"],
+        )
+
         scenario_result = run_dcf_scenarios(
             base_free_cash_flow=fcf,
             net_debt=net_debt,
             shares_outstanding=shares,
             market_price=market_price,
             request_cls=DCFRequest,
+            assumptions_bundle=auto_assumptions,
         )
+
         base_case = scenario_result["scenarios"]["base"]
+
         dcf_payload = {
             "result": base_case["result"],
             "scenarios": scenario_result,
             "missing_fields": [],
-            "note": "弱気・標準・強気の3シナリオ。前提は投資判断時に個別確認してください。",
+            "note": "銘柄別の実績成長率・利益率・Growth Score・データ取得率からDCF前提を自動生成しています。",
         }
 
         base_fair = base_case["fair_value_per_share"]
-        if (
-            base_fair is not None
-            and market_price not in (None, 0)
-            and growth_result is not None
-        ):
+        if base_fair is not None and market_price not in (None, 0):
             mispricing_result = score_mispricing(
                 MispricingRequest(
                     fair_value=base_fair,
@@ -177,8 +176,9 @@ def analyze(ticker: str):
         elif fcf is not None and fcf <= 0:
             dcf_payload["note"] = "FCFが正でないためDCFを計算していません。"
             dcf_payload["missing_fields"] = []
+        elif growth_result is None:
+            dcf_payload["note"] = "DCF前提生成に必要なGrowth Scoreを算出できないため未計算です。"
 
-    # v0.4の重み付け思想を維持し、取れたスコアだけで再正規化
     score_items = []
     score_weights = []
 
@@ -226,18 +226,12 @@ def analyze(ticker: str):
         "missing_fields": data["missing_fields"],
         "market_price": market_price,
         "metrics": m,
-        "growth": {
-            "result": growth_result,
-            "missing_fields": growth_missing,
-        },
+        "growth": {"result": growth_result, "missing_fields": growth_missing},
         "change": {
             "result": change_result,
             "missing_fields": change_missing,
-            "guidance_note": (
-                None
-                if m.get("guidance_revision_available")
-                else "会社予想修正率は取得できていないため、Change Score内部では中立値を使用。"
-            ),
+            "guidance_note": None if m.get("guidance_revision_available")
+            else "会社予想修正率は取得できていないため、Change Score内部では中立値を使用。",
         },
         "dcf": dcf_payload,
         "mispricing": mispricing_result,
@@ -252,6 +246,7 @@ def analyze(ticker: str):
         "quality_flags": {
             "guidance_revision_available": bool(m.get("guidance_revision_available", False)),
             "dcf_available": dcf_payload["scenarios"] is not None,
+            "auto_dcf_assumptions": dcf_payload["scenarios"] is not None,
         },
         "note": "外部データに欠損がある場合は架空値を生成せず、missing_fieldsに明示します。",
     }

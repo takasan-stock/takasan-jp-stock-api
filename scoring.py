@@ -126,32 +126,101 @@ def run_dcf(req):
     }
 
 
-DCF_SCENARIOS = {
-    "bear": {
-        "label": "弱気",
-        "growth_rate_pct": 5.0,
-        "discount_rate_pct": 9.0,
-        "terminal_growth_rate_pct": 0.5,
-    },
-    "base": {
-        "label": "標準",
-        "growth_rate_pct": 10.0,
-        "discount_rate_pct": 8.0,
-        "terminal_growth_rate_pct": 1.0,
-    },
-    "bull": {
-        "label": "強気",
-        "growth_rate_pct": 15.0,
-        "discount_rate_pct": 7.0,
-        "terminal_growth_rate_pct": 1.5,
-    },
-}
+def _safe_growth_component(value, floor=-20.0, cap=60.0):
+    if value is None:
+        return None
+    return max(floor, min(cap, float(value)))
 
 
-def run_dcf_scenarios(base_free_cash_flow, net_debt, shares_outstanding, market_price, request_cls):
+def build_auto_dcf_assumptions(metrics, growth_score, data_coverage_pct):
+    """
+    銘柄ごとの実績成長率とGrowth Scoreから、DCF前提を自動生成。
+    WACCを厳密推計するものではなく、比較用の保守的なルールベース。
+    """
+    revenue = _safe_growth_component(metrics.get("revenue_growth_pct"))
+    op_profit = _safe_growth_component(metrics.get("operating_profit_growth_pct"))
+    eps = _safe_growth_component(metrics.get("eps_growth_pct"))
+    margin = metrics.get("operating_margin_pct")
+
+    available = [x for x in [revenue, op_profit, eps] if x is not None]
+
+    if available:
+        # 極端値の影響を抑えつつ、利益成長をやや重視
+        weighted_parts = []
+        weights = []
+        if revenue is not None:
+            weighted_parts.append(revenue * 0.35)
+            weights.append(0.35)
+        if op_profit is not None:
+            weighted_parts.append(op_profit * 0.35)
+            weights.append(0.35)
+        if eps is not None:
+            weighted_parts.append(eps * 0.30)
+            weights.append(0.30)
+        raw_growth = sum(weighted_parts) / sum(weights)
+    else:
+        raw_growth = 5.0
+
+    # Growth Scoreを「継続可能性」の補正として使う
+    score_adjustment = (growth_score - 50.0) / 10.0  # 50点=0、100点=+5
+    base_growth = raw_growth * 0.35 + score_adjustment
+
+    # FCF成長率としてはかなり保守的に制限
+    base_growth = max(0.0, min(18.0, base_growth))
+
+    # 高利益率企業は上限方向、低利益率は少し抑制
+    if margin is not None:
+        if margin >= 25:
+            base_growth = min(20.0, base_growth + 1.0)
+        elif margin < 5:
+            base_growth = max(0.0, base_growth - 1.5)
+
+    # データ取得率が低いほど割引率を高める
+    coverage_penalty = max(0.0, (100.0 - data_coverage_pct) / 20.0)
+    base_discount = 8.0 + coverage_penalty
+    base_discount = max(7.5, min(10.5, base_discount))
+
+    bear_growth = max(-2.0, base_growth - 5.0)
+    bull_growth = min(25.0, base_growth + 5.0)
+
+    return {
+        "method": "rule_based_auto_v1",
+        "inputs": {
+            "revenue_growth_pct": revenue,
+            "operating_profit_growth_pct": op_profit,
+            "eps_growth_pct": eps,
+            "operating_margin_pct": margin,
+            "growth_score": growth_score,
+            "data_coverage_pct": data_coverage_pct,
+        },
+        "scenarios": {
+            "bear": {
+                "label": "弱気",
+                "growth_rate_pct": round(bear_growth, 2),
+                "discount_rate_pct": round(base_discount + 1.0, 2),
+                "terminal_growth_rate_pct": 0.5,
+            },
+            "base": {
+                "label": "標準",
+                "growth_rate_pct": round(base_growth, 2),
+                "discount_rate_pct": round(base_discount, 2),
+                "terminal_growth_rate_pct": 1.0,
+            },
+            "bull": {
+                "label": "強気",
+                "growth_rate_pct": round(bull_growth, 2),
+                "discount_rate_pct": round(max(6.5, base_discount - 1.0), 2),
+                "terminal_growth_rate_pct": 1.5,
+            },
+        },
+        "note": "実績成長率・利益率・Growth Score・データ取得率を使った比較用の自動前提。WACCの厳密推計ではありません。",
+    }
+
+
+def run_dcf_scenarios(base_free_cash_flow, net_debt, shares_outstanding, market_price, request_cls, assumptions_bundle):
     scenarios = {}
 
-    for key, assumptions in DCF_SCENARIOS.items():
+    for key, assumptions in assumptions_bundle["scenarios"].items():
         req = request_cls(
             base_free_cash_flow=base_free_cash_flow,
             growth_rate_pct=assumptions["growth_rate_pct"],
@@ -182,19 +251,20 @@ def run_dcf_scenarios(base_free_cash_flow, net_debt, shares_outstanding, market_
         if x["fair_value_per_share"] is not None
     ]
 
+    low = min(fair_values) if fair_values else None
+    high = max(fair_values) if fair_values else None
+
     if fair_values and market_price is not None:
-        low = min(fair_values)
-        high = max(fair_values)
         valuation_label = (
             "割安" if market_price < low
             else "適正圏" if market_price <= high
             else "割高"
         )
     else:
-        low = high = None
         valuation_label = None
 
     return {
+        "assumption_engine": assumptions_bundle,
         "scenarios": scenarios,
         "fair_value_range": {"low": low, "high": high} if fair_values else None,
         "market_price": market_price,
