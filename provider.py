@@ -1,7 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
 from io import BytesIO
-from typing import Any
 import re
 import pandas as pd
 import requests
@@ -13,6 +12,7 @@ JPX_MASTER_URLS = [
 ]
 COMPANY_NAME_FALLBACK = {"9563": "ATLAS TECHNOLOGIES", "6857": "アドバンテスト"}
 _JPX_NAME_CACHE = None
+BENCHMARK_SYMBOL = "1306.T"  # TOPIX連動型ETFをRS比較用に使用
 
 def _safe_float(v):
     try:
@@ -84,7 +84,7 @@ def _latest_price(t, info):
     try:
         fi = t.fast_info
         for attr in ("last_price","lastPrice"):
-            v = _safe_float(getattr(fi, attr, None))
+            v = _safe_float(getattr(fi,attr,None))
             if v and v > 0: return v
     except Exception: pass
     try:
@@ -135,6 +135,60 @@ def _free_cash_flow(annual_cf, quarterly_cf):
         if ocf is not None and capex is not None:
             return ocf + capex if capex < 0 else ocf - capex
     return None
+
+def _period_return(close: pd.Series, periods: int):
+    close = close.dropna()
+    if len(close) <= periods: return None
+    old = _safe_float(close.iloc[-(periods + 1)])
+    new = _safe_float(close.iloc[-1])
+    return _safe_pct_change(new, old)
+
+def _market_momentum(t: yf.Ticker):
+    result = {
+        "price_return_5d_pct": None,
+        "price_return_20d_pct": None,
+        "volume_ratio_20d": None,
+        "rs_63d_pct": None,
+        "rs_126d_pct": None,
+        "benchmark_symbol": BENCHMARK_SYMBOL,
+        "available": False,
+    }
+    try:
+        hist = t.history(period="1y", auto_adjust=False)
+        if hist is None or hist.empty:
+            return result
+
+        close = hist["Close"].dropna()
+        result["price_return_5d_pct"] = _period_return(close, 5)
+        result["price_return_20d_pct"] = _period_return(close, 20)
+
+        if "Volume" in hist.columns:
+            vol = hist["Volume"].dropna()
+            if len(vol) >= 21:
+                latest_vol = _safe_float(vol.iloc[-1])
+                avg20 = _safe_float(vol.iloc[-21:-1].mean())
+                if latest_vol is not None and avg20 not in (None, 0):
+                    result["volume_ratio_20d"] = latest_vol / avg20
+
+        bench = yf.Ticker(BENCHMARK_SYMBOL).history(period="1y", auto_adjust=False)
+        if bench is not None and not bench.empty:
+            bench_close = bench["Close"].dropna()
+            stock63 = _period_return(close, 63)
+            bench63 = _period_return(bench_close, 63)
+            stock126 = _period_return(close, 126)
+            bench126 = _period_return(bench_close, 126)
+            if stock63 is not None and bench63 is not None:
+                result["rs_63d_pct"] = stock63 - bench63
+            if stock126 is not None and bench126 is not None:
+                result["rs_126d_pct"] = stock126 - bench126
+
+        result["available"] = any(
+            result[k] is not None for k in
+            ["price_return_5d_pct","price_return_20d_pct","volume_ratio_20d","rs_63d_pct","rs_126d_pct"]
+        )
+        return result
+    except Exception:
+        return result
 
 def get_company_snapshot(ticker: str):
     symbol = f"{ticker}.T"
@@ -191,6 +245,7 @@ def get_company_snapshot(ticker: str):
     market_price = _latest_price(t, info)
     base_fcf = _free_cash_flow(annual_cf, quarterly_cf)
     net_debt = _net_debt(info, annual_bs, quarterly_bs)
+    market_momentum = _market_momentum(t)
 
     fields = {
         "revenue_growth_pct": revenue_growth,
@@ -224,6 +279,7 @@ def get_company_snapshot(ticker: str):
         "data_coverage_pct":coverage,
         "missing_fields":missing,
         "market_price":market_price,
+        "market_momentum": market_momentum,
         "metrics":{
             "revenue_growth_pct":revenue_growth,
             "operating_profit_growth_pct":operating_profit_growth,
@@ -234,9 +290,15 @@ def get_company_snapshot(ticker: str):
             "margin_change_points":margin_change,
             "guidance_revision_pct":None,
             "guidance_revision_available":False,
+            "tdnet_revision_available":False,
             "sign_flip_penalty":bool(op_l is not None and op_p is not None and op_l < 0 <= op_p),
             "free_cash_flow":base_fcf,
             "net_debt":net_debt,
             "shares_outstanding":shares,
+            "price_return_5d_pct": market_momentum.get("price_return_5d_pct"),
+            "price_return_20d_pct": market_momentum.get("price_return_20d_pct"),
+            "volume_ratio_20d": market_momentum.get("volume_ratio_20d"),
+            "rs_63d_pct": market_momentum.get("rs_63d_pct"),
+            "rs_126d_pct": market_momentum.get("rs_126d_pct"),
         }
     }

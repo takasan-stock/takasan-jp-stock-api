@@ -92,56 +92,129 @@ def score_mispricing(req):
 
 
 def score_momentum(metrics, growth_result, change_result):
-    """決算Momentum v1: 財務モメンタム中心。欠損は中立50点。"""
-    def neutral(v, scale):
-        return 50.0 if v is None else _clamp(50 + v * scale)
+    """
+    決算Momentum v2
+    財務モメンタム + 直近株価反応 + 出来高 + TOPIX連動ETF対比RS。
+    TDnet上方修正は未接続のため、取得できない場合は中立50点。
+    """
 
-    revenue_score = neutral(metrics.get("revenue_growth_pct"), 1.2)
-    op_profit_score = neutral(metrics.get("operating_profit_growth_pct"), 0.8)
-    eps_score = neutral(metrics.get("eps_growth_pct"), 0.8)
-    margin_score = neutral(metrics.get("margin_change_points"), 6.0)
+    def neutral_if_none(v, fn):
+        return 50.0 if v is None else _clamp(fn(v))
 
-    latest = metrics.get("latest_growth_pct")
-    previous = metrics.get("previous_growth_pct")
-    if latest is None or previous is None:
-        acceleration = None
+    revenue_growth = metrics.get("revenue_growth_pct")
+    op_growth = metrics.get("operating_profit_growth_pct")
+    eps_growth = metrics.get("eps_growth_pct")
+    margin_change = metrics.get("margin_change_points")
+    latest_growth = metrics.get("latest_growth_pct")
+    previous_growth = metrics.get("previous_growth_pct")
+    guidance = metrics.get("guidance_revision_pct")
+
+    # 財務モメンタム
+    revenue_score = neutral_if_none(revenue_growth, lambda x: 50 + x * 1.2)
+    op_profit_score = neutral_if_none(op_growth, lambda x: 50 + x * 0.8)
+    eps_score = neutral_if_none(eps_growth, lambda x: 50 + x * 0.8)
+    margin_score = neutral_if_none(margin_change, lambda x: 50 + x * 6.0)
+
+    if latest_growth is None or previous_growth is None:
         acceleration_score = 50.0
+        acceleration = None
     else:
-        acceleration = latest - previous
+        acceleration = latest_growth - previous_growth
         acceleration_score = _clamp(50 + acceleration * 1.5)
 
-    guidance = metrics.get("guidance_revision_pct")
-    guidance_available = guidance is not None
-    guidance_score = 50.0 if guidance is None else _clamp(50 + guidance * 2.0)
+    if guidance is None:
+        guidance_score = 50.0
+        guidance_available = False
+    else:
+        guidance_score = _clamp(50 + guidance * 2.0)
+        guidance_available = True
 
-    growth_support = growth_result["score"] if growth_result else 50.0
-    change_support = change_result["score"] if change_result else 50.0
+    # 市場反応
+    ret5 = metrics.get("price_return_5d_pct")
+    ret20 = metrics.get("price_return_20d_pct")
+    volume_ratio = metrics.get("volume_ratio_20d")
+    rs63 = metrics.get("rs_63d_pct")
+    rs126 = metrics.get("rs_126d_pct")
 
+    price5_score = neutral_if_none(ret5, lambda x: 50 + x * 3.0)
+    price20_score = neutral_if_none(ret20, lambda x: 50 + x * 1.5)
+    price_reaction_score = round(price5_score * 0.60 + price20_score * 0.40, 1)
+
+    volume_score = neutral_if_none(volume_ratio, lambda x: 25 + x * 25)
+
+    rs63_score = neutral_if_none(rs63, lambda x: 50 + x * 1.5)
+    rs126_score = neutral_if_none(rs126, lambda x: 50 + x * 1.0)
+    rs_score = round(rs63_score * 0.60 + rs126_score * 0.40, 1)
+
+    # v2: 財務60% + 市場40%
     score = round(
-        revenue_score * 0.15 + op_profit_score * 0.20 + eps_score * 0.15
-        + margin_score * 0.10 + acceleration_score * 0.15 + guidance_score * 0.10
-        + growth_support * 0.10 + change_support * 0.05, 1
+        revenue_score * 0.10
+        + op_profit_score * 0.15
+        + eps_score * 0.10
+        + margin_score * 0.08
+        + acceleration_score * 0.10
+        + guidance_score * 0.07
+        + price_reaction_score * 0.15
+        + volume_score * 0.10
+        + rs_score * 0.15,
+        1,
     )
-    rank = "S" if score >= 90 else "A" if score >= 80 else "B" if score >= 65 else "C" if score >= 50 else "D"
-    label = "非常に強い決算モメンタム" if score >= 90 else "強い決算モメンタム" if score >= 80 else "良好" if score >= 65 else "中立" if score >= 50 else "弱い"
+
+    rank = (
+        "S" if score >= 90 else
+        "A" if score >= 80 else
+        "B" if score >= 65 else
+        "C" if score >= 50 else
+        "D"
+    )
+
+    label = (
+        "非常に強い決算モメンタム" if score >= 90 else
+        "強い決算モメンタム" if score >= 80 else
+        "良好" if score >= 65 else
+        "中立" if score >= 50 else
+        "弱い"
+    )
+
+    growth_score = growth_result["score"] if growth_result else None
+    change_score = change_result["score"] if change_result else None
 
     return {
-        "score": score, "rank": rank, "label": label,
+        "version": "v2",
+        "score": score,
+        "rank": rank,
+        "label": label,
         "components": {
-            "revenue_growth": round(revenue_score,1),
-            "operating_profit_growth": round(op_profit_score,1),
-            "eps_growth": round(eps_score,1),
-            "margin_change": round(margin_score,1),
-            "growth_acceleration": round(acceleration_score,1),
-            "guidance_revision": round(guidance_score,1),
-            "growth_score_support": round(growth_support,1),
-            "change_score_support": round(change_support,1),
+            "revenue_growth": round(revenue_score, 1),
+            "operating_profit_growth": round(op_profit_score, 1),
+            "eps_growth": round(eps_score, 1),
+            "margin_change": round(margin_score, 1),
+            "growth_acceleration": round(acceleration_score, 1),
+            "guidance_revision": round(guidance_score, 1),
+            "price_reaction": round(price_reaction_score, 1),
+            "volume": round(volume_score, 1),
+            "relative_strength": round(rs_score, 1),
+            "growth_score_support": growth_score,
+            "change_score_support": change_score,
+        },
+        "market": {
+            "price_return_5d_pct": round(ret5, 2) if ret5 is not None else None,
+            "price_return_20d_pct": round(ret20, 2) if ret20 is not None else None,
+            "volume_ratio_20d": round(volume_ratio, 2) if volume_ratio is not None else None,
+            "rs_63d_pct": round(rs63, 2) if rs63 is not None else None,
+            "rs_126d_pct": round(rs126, 2) if rs126 is not None else None,
+            "benchmark": "1306.T",
         },
         "raw": {
-            "growth_acceleration_pct_points": round(acceleration,2) if acceleration is not None else None,
+            "growth_acceleration_pct_points": round(acceleration, 2) if acceleration is not None else None,
             "guidance_revision_available": guidance_available,
+            "tdnet_revision_available": bool(metrics.get("tdnet_revision_available", False)),
         },
-        "note": "v1は財務モメンタム中心。株価反応・出来高・RS・TDnet上方修正は今後追加予定。",
+        "weights": {
+            "financial": 0.60,
+            "market": 0.40,
+        },
+        "note": "v2は財務モメンタムに直近株価反応・出来高・TOPIX連動ETF対比RSを追加。TDnet上方修正は未接続のため未取得時は中立扱い。",
     }
 
 

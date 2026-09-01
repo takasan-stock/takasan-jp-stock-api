@@ -16,8 +16,8 @@ from provider import get_company_snapshot
 
 app = FastAPI(
     title="たかさん日本株分析 v2 API",
-    version="0.7.0",
-    description="Growth / Change / 決算Momentum / 自動DCF / Mispricing 日本株分析API",
+    version="0.8.0",
+    description="Growth / Change / Momentum v2（株価・出来高・RS）/ 自動DCF / Mispricing 日本株分析API",
 )
 
 origins = [x.strip() for x in os.getenv("ALLOWED_ORIGINS", "*").split(",") if x.strip()]
@@ -34,7 +34,7 @@ app.add_middleware(
 def root():
     return {
         "name": "たかさん日本株分析 v2 API",
-        "version": "0.7.0",
+        "version": "0.8.0",
         "status": "ok",
         "docs": "/docs",
     }
@@ -42,7 +42,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.7.0"}
+    return {"status": "ok", "version": "0.8.0"}
 
 
 @app.post("/score/growth")
@@ -255,7 +255,7 @@ def analyze(ticker: str):
             "guidance_revision_available": bool(m.get("guidance_revision_available", False)),
             "dcf_available": dcf_payload["scenarios"] is not None,
             "auto_dcf_assumptions": dcf_payload["scenarios"] is not None,
-            "momentum_v1": True,
+            "momentum_v2": True,
         },
         "note": "外部データに欠損がある場合は架空値を生成せず、missing_fieldsに明示します。",
     }
