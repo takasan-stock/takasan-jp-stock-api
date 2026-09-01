@@ -90,6 +90,61 @@ def score_mispricing(req):
     }
 
 
+
+def score_momentum(metrics, growth_result, change_result):
+    """決算Momentum v1: 財務モメンタム中心。欠損は中立50点。"""
+    def neutral(v, scale):
+        return 50.0 if v is None else _clamp(50 + v * scale)
+
+    revenue_score = neutral(metrics.get("revenue_growth_pct"), 1.2)
+    op_profit_score = neutral(metrics.get("operating_profit_growth_pct"), 0.8)
+    eps_score = neutral(metrics.get("eps_growth_pct"), 0.8)
+    margin_score = neutral(metrics.get("margin_change_points"), 6.0)
+
+    latest = metrics.get("latest_growth_pct")
+    previous = metrics.get("previous_growth_pct")
+    if latest is None or previous is None:
+        acceleration = None
+        acceleration_score = 50.0
+    else:
+        acceleration = latest - previous
+        acceleration_score = _clamp(50 + acceleration * 1.5)
+
+    guidance = metrics.get("guidance_revision_pct")
+    guidance_available = guidance is not None
+    guidance_score = 50.0 if guidance is None else _clamp(50 + guidance * 2.0)
+
+    growth_support = growth_result["score"] if growth_result else 50.0
+    change_support = change_result["score"] if change_result else 50.0
+
+    score = round(
+        revenue_score * 0.15 + op_profit_score * 0.20 + eps_score * 0.15
+        + margin_score * 0.10 + acceleration_score * 0.15 + guidance_score * 0.10
+        + growth_support * 0.10 + change_support * 0.05, 1
+    )
+    rank = "S" if score >= 90 else "A" if score >= 80 else "B" if score >= 65 else "C" if score >= 50 else "D"
+    label = "非常に強い決算モメンタム" if score >= 90 else "強い決算モメンタム" if score >= 80 else "良好" if score >= 65 else "中立" if score >= 50 else "弱い"
+
+    return {
+        "score": score, "rank": rank, "label": label,
+        "components": {
+            "revenue_growth": round(revenue_score,1),
+            "operating_profit_growth": round(op_profit_score,1),
+            "eps_growth": round(eps_score,1),
+            "margin_change": round(margin_score,1),
+            "growth_acceleration": round(acceleration_score,1),
+            "guidance_revision": round(guidance_score,1),
+            "growth_score_support": round(growth_support,1),
+            "change_score_support": round(change_support,1),
+        },
+        "raw": {
+            "growth_acceleration_pct_points": round(acceleration,2) if acceleration is not None else None,
+            "guidance_revision_available": guidance_available,
+        },
+        "note": "v1は財務モメンタム中心。株価反応・出来高・RS・TDnet上方修正は今後追加予定。",
+    }
+
+
 def run_dcf(req):
     r = req.discount_rate_pct / 100
     g = req.growth_rate_pct / 100

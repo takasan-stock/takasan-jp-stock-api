@@ -7,6 +7,7 @@ from scoring import (
     score_growth,
     score_change,
     score_mispricing,
+    score_momentum,
     run_dcf,
     build_auto_dcf_assumptions,
     run_dcf_scenarios,
@@ -15,8 +16,8 @@ from provider import get_company_snapshot
 
 app = FastAPI(
     title="たかさん日本株分析 v2 API",
-    version="0.6.0",
-    description="銘柄別・自動DCF前提生成 + Growth / Change / Mispricing 日本株分析API",
+    version="0.7.0",
+    description="Growth / Change / 決算Momentum / 自動DCF / Mispricing 日本株分析API",
 )
 
 origins = [x.strip() for x in os.getenv("ALLOWED_ORIGINS", "*").split(",") if x.strip()]
@@ -33,7 +34,7 @@ app.add_middleware(
 def root():
     return {
         "name": "たかさん日本株分析 v2 API",
-        "version": "0.6.0",
+        "version": "0.7.0",
         "status": "ok",
         "docs": "/docs",
     }
@@ -41,7 +42,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.6.0"}
+    return {"status": "ok", "version": "0.7.0"}
 
 
 @app.post("/score/growth")
@@ -114,6 +115,8 @@ def analyze(ticker: str):
             )
         )
 
+    momentum_result = score_momentum(m, growth_result, change_result)
+
     fcf = m.get("free_cash_flow")
     net_debt = m.get("net_debt")
     shares = m.get("shares_outstanding")
@@ -184,10 +187,13 @@ def analyze(ticker: str):
 
     if growth_result is not None:
         score_items.append(growth_result["score"])
-        score_weights.append(0.50)
+        score_weights.append(0.35)
     if change_result is not None:
         score_items.append(change_result["score"])
-        score_weights.append(0.30)
+        score_weights.append(0.20)
+    if momentum_result is not None:
+        score_items.append(momentum_result["score"])
+        score_weights.append(0.25)
     if mispricing_result is not None:
         score_items.append(mispricing_result["score"])
         score_weights.append(0.20)
@@ -233,13 +239,15 @@ def analyze(ticker: str):
             "guidance_note": None if m.get("guidance_revision_available")
             else "会社予想修正率は取得できていないため、Change Score内部では中立値を使用。",
         },
+        "momentum": momentum_result,
         "dcf": dcf_payload,
         "mispricing": mispricing_result,
         "ai_score": ai_score,
         "rank": rank,
         "score_weights": {
-            "growth": 0.50,
-            "change": 0.30,
+            "growth": 0.35,
+            "change": 0.20,
+            "momentum": 0.25,
             "mispricing": 0.20,
             "note": "取得できたスコアだけで重みを再正規化します。",
         },
@@ -247,6 +255,7 @@ def analyze(ticker: str):
             "guidance_revision_available": bool(m.get("guidance_revision_available", False)),
             "dcf_available": dcf_payload["scenarios"] is not None,
             "auto_dcf_assumptions": dcf_payload["scenarios"] is not None,
+            "momentum_v1": True,
         },
         "note": "外部データに欠損がある場合は架空値を生成せず、missing_fieldsに明示します。",
     }
