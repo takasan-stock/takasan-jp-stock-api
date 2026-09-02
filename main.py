@@ -1,6 +1,7 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from models import GrowthRequest, ChangeRequest, MispricingRequest, DCFRequest
 from scoring import (
@@ -14,9 +15,81 @@ from scoring import (
 )
 from provider import get_company_snapshot
 
+
+class BatchAnalyzeRequest(BaseModel):
+    tickers: list[str] = Field(min_length=1, max_length=100)
+    sort_by: str = "momentum"
+    min_rank: str | None = None
+    only_upward_revision: bool = False
+
+
+class BatchRankingRequest(BaseModel):
+    tickers: list[str] = Field(min_length=1, max_length=100)
+    min_rank: str | None = None
+    only_upward_revision: bool = False
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+RANK_ORDER = {"S": 5, "A": 4, "B": 3, "C": 2, "D": 1, None: 0}
+
+
+def _rank_at_least(rank, min_rank):
+    if not min_rank:
+        return True
+    return RANK_ORDER.get(rank, 0) >= RANK_ORDER.get(min_rank.upper(), 0)
+
+
+def _summary_from_analysis(result):
+    forecast = result.get("forecast_revision") or {}
+    momentum = result.get("momentum") or {}
+    growth = (result.get("growth") or {}).get("result") or {}
+    change = (result.get("change") or {}).get("result") or {}
+    dcf = result.get("dcf") or {}
+    scenarios = dcf.get("scenarios") or {}
+    scenario_block = scenarios.get("scenarios") or {}
+    base = scenario_block.get("base") or {}
+    mispricing = result.get("mispricing") or {}
+
+    return {
+        "ticker": result.get("ticker"),
+        "company_name": result.get("company_name"),
+        "market_price": result.get("market_price"),
+        "ai_score": result.get("ai_score"),
+        "rank": result.get("rank"),
+        "momentum_score": momentum.get("score"),
+        "momentum_rank": momentum.get("rank"),
+        "momentum_label": momentum.get("label"),
+        "growth_score": growth.get("score"),
+        "change_score": change.get("score"),
+        "guidance_revision_pct": forecast.get("guidance_revision_pct"),
+        "is_upward_revision": forecast.get("is_upward_revision"),
+        "is_downward_revision": forecast.get("is_downward_revision"),
+        "forecast_revision_status": forecast.get("status"),
+        "dcf_base_fair_value": base.get("fair_value_per_share"),
+        "dcf_valuation_label": scenarios.get("valuation_label"),
+        "mispricing_score": mispricing.get("score"),
+        "data_coverage_pct": result.get("data_coverage_pct"),
+        "missing_fields": result.get("missing_fields"),
+    }
+
+
+def _sort_value(row, sort_by):
+    key_map = {
+        "momentum": "momentum_score",
+        "ai": "ai_score",
+        "growth": "growth_score",
+        "change": "change_score",
+        "revision": "guidance_revision_pct",
+        "mispricing": "mispricing_score",
+    }
+    key = key_map.get(sort_by, "momentum_score")
+    value = row.get(key)
+    return -10**18 if value is None else value
+
+
 app = FastAPI(
     title="たかさん日本株分析 v2 API",
-    version="0.9.1",
+    version="1.0.0",
     description="Growth / Change / Momentum v2 + J-Quants会社予想履歴探索強化 / 自動DCF / Mispricing 日本株分析API",
 )
 
@@ -34,7 +107,7 @@ app.add_middleware(
 def root():
     return {
         "name": "たかさん日本株分析 v2 API",
-        "version": "0.9.1",
+        "version": "1.0.0",
         "status": "ok",
         "docs": "/docs",
     }
@@ -42,7 +115,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.9.1"}
+    return {"status": "ok", "version": "1.0.0"}
 
 
 @app.post("/score/growth")
@@ -69,8 +142,7 @@ def _missing_required(metrics, names):
     return [name for name in names if metrics.get(name) is None]
 
 
-@app.get("/analyze/{ticker}")
-def analyze(ticker: str):
+def _analyze_one(ticker: str):
     ticker = ticker.strip().upper().replace(".T", "")
     if len(ticker) != 4 or not ticker.isdigit():
         raise HTTPException(status_code=400, detail="4桁の証券コードを指定してください。")
@@ -261,3 +333,120 @@ def analyze(ticker: str):
         },
         "note": "外部データに欠損がある場合は架空値を生成せず、missing_fieldsに明示します。",
     }
+
+
+@app.get("/analyze/{ticker}")
+def analyze(ticker: str):
+    return _analyze_one(ticker)
+
+
+@app.post("/analyze/batch")
+def analyze_batch(req: BatchAnalyzeRequest):
+    sort_by = req.sort_by.lower().strip()
+    allowed = {"momentum", "ai", "growth", "change", "revision", "mispricing"}
+    if sort_by not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sort_by は {sorted(allowed)} から指定してください。"
+        )
+
+    rows = []
+    errors = []
+
+    # 重複を除き入力順を維持
+    seen = set()
+    tickers = []
+    for raw in req.tickers:
+        ticker = str(raw).strip().upper().replace(".T", "")
+        if ticker and ticker not in seen:
+            seen.add(ticker)
+            tickers.append(ticker)
+
+    for ticker in tickers:
+        try:
+            result = _analyze_one(ticker)
+            row = _summary_from_analysis(result)
+
+            if req.only_upward_revision and row.get("is_upward_revision") is not True:
+                continue
+            if not _rank_at_least(row.get("rank"), req.min_rank):
+                continue
+
+            rows.append(row)
+        except HTTPException as e:
+            errors.append({
+                "ticker": ticker,
+                "status_code": e.status_code,
+                "detail": e.detail,
+            })
+        except Exception as e:
+            errors.append({
+                "ticker": ticker,
+                "status_code": 500,
+                "detail": f"{type(e).__name__}: {str(e)}",
+            })
+
+    rows.sort(key=lambda x: _sort_value(x, sort_by), reverse=True)
+
+    for i, row in enumerate(rows, start=1):
+        row["position"] = i
+
+    return {
+        "version": "1.0.0",
+        "sort_by": sort_by,
+        "requested_count": len(tickers),
+        "success_count": len(rows),
+        "error_count": len(errors),
+        "filters": {
+            "min_rank": req.min_rank,
+            "only_upward_revision": req.only_upward_revision,
+        },
+        "results": rows,
+        "errors": errors,
+        "note": "各銘柄を個別分析して要約・ランキング。取得できない値は架空補完しません。",
+    }
+
+
+@app.post("/ranking/momentum")
+def ranking_momentum(req: BatchRankingRequest):
+    batch = analyze_batch(
+        BatchAnalyzeRequest(
+            tickers=req.tickers,
+            sort_by="momentum",
+            min_rank=req.min_rank,
+            only_upward_revision=req.only_upward_revision,
+        )
+    )
+    batch["results"] = batch["results"][:req.limit]
+    batch["ranking_type"] = "momentum"
+    return batch
+
+
+@app.post("/ranking/ai")
+def ranking_ai(req: BatchRankingRequest):
+    batch = analyze_batch(
+        BatchAnalyzeRequest(
+            tickers=req.tickers,
+            sort_by="ai",
+            min_rank=req.min_rank,
+            only_upward_revision=req.only_upward_revision,
+        )
+    )
+    batch["results"] = batch["results"][:req.limit]
+    batch["ranking_type"] = "ai"
+    return batch
+
+
+@app.post("/ranking/upward-revision")
+def ranking_upward_revision(req: BatchRankingRequest):
+    batch = analyze_batch(
+        BatchAnalyzeRequest(
+            tickers=req.tickers,
+            sort_by="revision",
+            min_rank=req.min_rank,
+            only_upward_revision=True,
+        )
+    )
+    batch["results"] = batch["results"][:req.limit]
+    batch["ranking_type"] = "upward_revision"
+    return batch
