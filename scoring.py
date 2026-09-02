@@ -95,7 +95,7 @@ def score_momentum(metrics, growth_result, change_result):
     """
     決算Momentum v2
     財務モメンタム + 直近株価反応 + 出来高 + TOPIX連動ETF対比RS。
-    TDnet上方修正は未接続のため、取得できない場合は中立50点。
+    会社予想修正はJ-Quants接続時に実データを使用し、未取得時は中立50点。TDnet原文書類は未接続。
     """
 
     def neutral_if_none(v, fn):
@@ -214,7 +214,7 @@ def score_momentum(metrics, growth_result, change_result):
             "financial": 0.60,
             "market": 0.40,
         },
-        "note": "v2は財務モメンタムに直近株価反応・出来高・TOPIX連動ETF対比RSを追加。TDnet上方修正は未接続のため未取得時は中立扱い。",
+        "note": "v2は財務モメンタムに直近株価反応・出来高・TOPIX連動ETF対比RSを追加。J-Quants会社予想修正を利用可能。未取得時は中立扱い。TDnet原文書類は未接続。",
     }
 
 

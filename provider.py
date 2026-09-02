@@ -246,6 +246,7 @@ def get_company_snapshot(ticker: str):
     base_fcf = _free_cash_flow(annual_cf, quarterly_cf)
     net_debt = _net_debt(info, annual_bs, quarterly_bs)
     market_momentum = _market_momentum(t)
+    forecast_revision = _jquants_forecast_revision(ticker)
 
     fields = {
         "revenue_growth_pct": revenue_growth,
@@ -280,6 +281,7 @@ def get_company_snapshot(ticker: str):
         "missing_fields":missing,
         "market_price":market_price,
         "market_momentum": market_momentum,
+        "forecast_revision": forecast_revision,
         "metrics":{
             "revenue_growth_pct":revenue_growth,
             "operating_profit_growth_pct":operating_profit_growth,
@@ -288,9 +290,10 @@ def get_company_snapshot(ticker: str):
             "latest_growth_pct":revenue_growth,
             "previous_growth_pct":previous_growth,
             "margin_change_points":margin_change,
-            "guidance_revision_pct":None,
-            "guidance_revision_available":False,
+            "guidance_revision_pct":forecast_revision.get("guidance_revision_pct"),
+            "guidance_revision_available":bool(forecast_revision.get("available", False)),
             "tdnet_revision_available":False,
+            "jquants_revision_available":bool(forecast_revision.get("available", False)),
             "sign_flip_penalty":bool(op_l is not None and op_p is not None and op_l < 0 <= op_p),
             "free_cash_flow":base_fcf,
             "net_debt":net_debt,
@@ -302,3 +305,158 @@ def get_company_snapshot(ticker: str):
             "rs_126d_pct": market_momentum.get("rs_126d_pct"),
         }
     }
+
+
+def _jquants_forecast_revision(ticker: str):
+    """
+    J-Quants API V2 の財務サマリーから、
+    同一通期末に対する直近2回の異なる会社予想営業利益(FOP)を比較して修正率を算出する。
+
+    JQUANTS_API_KEY が無い場合は未取得。
+    Free planでは財務サマリーは利用可能だが12週間遅延。
+    """
+    import os
+
+    result = {
+        "available": False,
+        "source": "J-Quants API V2 / fins summary",
+        "status": "api_key_not_configured",
+        "latest_disclosure_date": None,
+        "fiscal_year_end": None,
+        "latest_forecast_operating_profit": None,
+        "previous_forecast_operating_profit": None,
+        "guidance_revision_pct": None,
+        "forecast_sales_revision_pct": None,
+        "forecast_eps_revision_pct": None,
+        "is_upward_revision": None,
+        "is_downward_revision": None,
+        "records_compared": 0,
+        "note": "JQUANTS_API_KEY が未設定のため会社予想修正率は未取得。",
+    }
+
+    api_key = os.getenv("JQUANTS_API_KEY", "").strip()
+    if not api_key:
+        return result
+
+    try:
+        import jquantsapi
+    except Exception as e:
+        result["status"] = "client_not_available"
+        result["note"] = f"jquants-api-client を読み込めませんでした: {type(e).__name__}"
+        return result
+
+    try:
+        cli = jquantsapi.ClientV2(api_key=api_key)
+        df = cli.get_fin_summary(code=ticker)
+    except Exception as e:
+        result["status"] = "request_failed"
+        result["note"] = f"J-Quants財務サマリー取得失敗: {type(e).__name__}"
+        return result
+
+    if df is None or df.empty:
+        result["status"] = "no_data"
+        result["note"] = "J-Quants財務サマリーに対象銘柄データがありません。"
+        return result
+
+    df = df.copy()
+    if "DiscDate" in df.columns:
+        df["DiscDate"] = pd.to_datetime(df["DiscDate"], errors="coerce")
+
+    if "FOP" not in df.columns:
+        result["status"] = "field_missing"
+        result["note"] = "J-QuantsレスポンスにFOP列がありません。"
+        return result
+
+    df["_FOP_NUM"] = pd.to_numeric(df["FOP"], errors="coerce")
+    df = df[df["_FOP_NUM"].notna()].copy()
+    if df.empty:
+        result["status"] = "no_forecast"
+        result["note"] = "会社予想営業利益(FOP)の比較可能データがありません。"
+        return result
+
+    sort_cols = [c for c in ["DiscDate", "DiscTime"] if c in df.columns]
+    if sort_cols:
+        df = df.sort_values(sort_cols)
+
+    latest = df.iloc[-1]
+    latest_fy = latest.get("CurFYEn") if "CurFYEn" in df.columns else None
+
+    if "CurFYEn" in df.columns and pd.notna(latest_fy):
+        same_fy = df[df["CurFYEn"].astype(str) == str(latest_fy)].copy()
+    else:
+        same_fy = df.copy()
+
+    if sort_cols:
+        same_fy = same_fy.sort_values([c for c in sort_cols if c in same_fy.columns])
+
+    # FOPが変わったレコードだけ残す
+    distinct_rows = []
+    last_value = None
+    have_last = False
+    for _, row in same_fy.iterrows():
+        value = float(row["_FOP_NUM"])
+        if (not have_last) or value != last_value:
+            distinct_rows.append(row)
+            last_value = value
+            have_last = True
+
+    if len(distinct_rows) < 2:
+        result.update({
+            "status": "single_forecast",
+            "latest_disclosure_date": (
+                str(latest.get("DiscDate").date())
+                if "DiscDate" in latest and pd.notna(latest.get("DiscDate"))
+                else None
+            ),
+            "fiscal_year_end": (
+                str(latest_fy.date()) if hasattr(latest_fy, "date")
+                else (str(latest_fy) if latest_fy is not None else None)
+            ),
+            "latest_forecast_operating_profit": float(latest["_FOP_NUM"]),
+            "records_compared": 1,
+            "note": "同一期末の比較可能な過去会社予想が不足しているため修正率は未算定。",
+        })
+        return result
+
+    prev = distinct_rows[-2]
+    cur = distinct_rows[-1]
+
+    cur_fop = float(cur["_FOP_NUM"])
+    prev_fop = float(prev["_FOP_NUM"])
+    op_rev = None if prev_fop == 0 else (cur_fop / abs(prev_fop) - 1) * 100
+
+    def _revision(col):
+        if col not in same_fy.columns:
+            return None
+        c = pd.to_numeric(pd.Series([cur.get(col)]), errors="coerce").iloc[0]
+        p = pd.to_numeric(pd.Series([prev.get(col)]), errors="coerce").iloc[0]
+        if pd.isna(c) or pd.isna(p) or p == 0:
+            return None
+        return (float(c) / abs(float(p)) - 1) * 100
+
+    sales_rev = _revision("FSales")
+    eps_rev = _revision("FEPS")
+
+    result.update({
+        "available": op_rev is not None,
+        "status": "ok" if op_rev is not None else "comparison_unavailable",
+        "latest_disclosure_date": (
+            str(cur.get("DiscDate").date())
+            if "DiscDate" in cur and pd.notna(cur.get("DiscDate"))
+            else None
+        ),
+        "fiscal_year_end": (
+            str(latest_fy.date()) if hasattr(latest_fy, "date")
+            else (str(latest_fy) if latest_fy is not None else None)
+        ),
+        "latest_forecast_operating_profit": cur_fop,
+        "previous_forecast_operating_profit": prev_fop,
+        "guidance_revision_pct": round(op_rev, 2) if op_rev is not None else None,
+        "forecast_sales_revision_pct": round(sales_rev, 2) if sales_rev is not None else None,
+        "forecast_eps_revision_pct": round(eps_rev, 2) if eps_rev is not None else None,
+        "is_upward_revision": bool(op_rev > 0) if op_rev is not None else None,
+        "is_downward_revision": bool(op_rev < 0) if op_rev is not None else None,
+        "records_compared": 2,
+        "note": "同一通期末の直近2つの異なる会社予想営業利益(FOP)を比較。プランにより配信遅延があります。",
+    })
+    return result

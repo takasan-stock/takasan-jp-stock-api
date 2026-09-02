@@ -6,3 +6,4 @@ pandas
 requests
 openpyxl
 xlrd
+jquants-api-client
