@@ -16,8 +16,8 @@ from provider import get_company_snapshot
 
 app = FastAPI(
     title="たかさん日本株分析 v2 API",
-    version="0.9.0",
-    description="Growth / Change / Momentum v2 + J-Quants会社予想修正 / 自動DCF / Mispricing 日本株分析API",
+    version="0.9.1",
+    description="Growth / Change / Momentum v2 + J-Quants会社予想履歴探索強化 / 自動DCF / Mispricing 日本株分析API",
 )
 
 origins = [x.strip() for x in os.getenv("ALLOWED_ORIGINS", "*").split(",") if x.strip()]
@@ -34,7 +34,7 @@ app.add_middleware(
 def root():
     return {
         "name": "たかさん日本株分析 v2 API",
-        "version": "0.9.0",
+        "version": "0.9.1",
         "status": "ok",
         "docs": "/docs",
     }
@@ -42,7 +42,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.9.0"}
+    return {"status": "ok", "version": "0.9.1"}
 
 
 @app.post("/score/growth")

@@ -308,20 +308,15 @@ def get_company_snapshot(ticker: str):
 
 
 def _jquants_forecast_revision(ticker: str):
-    """
-    J-Quants API V2 の財務サマリーから、
-    同一通期末に対する直近2回の異なる会社予想営業利益(FOP)を比較して修正率を算出する。
-
-    JQUANTS_API_KEY が無い場合は未取得。
-    Free planでは財務サマリーは利用可能だが12週間遅延。
-    """
     import os
 
     result = {
         "available": False,
         "source": "J-Quants API V2 / fins summary",
         "status": "api_key_not_configured",
+        "search_strategy": "same_fiscal_year_then_prior_forecast",
         "latest_disclosure_date": None,
+        "previous_disclosure_date": None,
         "fiscal_year_end": None,
         "latest_forecast_operating_profit": None,
         "previous_forecast_operating_profit": None,
@@ -331,6 +326,9 @@ def _jquants_forecast_revision(ticker: str):
         "is_upward_revision": None,
         "is_downward_revision": None,
         "records_compared": 0,
+        "candidate_count_same_fy": 0,
+        "candidate_count_all": 0,
+        "comparison_scope": None,
         "note": "JQUANTS_API_KEY が未設定のため会社予想修正率は未取得。",
     }
 
@@ -340,12 +338,6 @@ def _jquants_forecast_revision(ticker: str):
 
     try:
         import jquantsapi
-    except Exception as e:
-        result["status"] = "client_not_available"
-        result["note"] = f"jquants-api-client を読み込めませんでした: {type(e).__name__}"
-        return result
-
-    try:
         cli = jquantsapi.ClientV2(api_key=api_key)
         df = cli.get_fin_summary(code=ticker)
     except Exception as e:
@@ -361,6 +353,8 @@ def _jquants_forecast_revision(ticker: str):
     df = df.copy()
     if "DiscDate" in df.columns:
         df["DiscDate"] = pd.to_datetime(df["DiscDate"], errors="coerce")
+    if "DiscTime" in df.columns:
+        df["DiscTime"] = df["DiscTime"].astype(str)
 
     if "FOP" not in df.columns:
         result["status"] = "field_missing"
@@ -378,6 +372,7 @@ def _jquants_forecast_revision(ticker: str):
     if sort_cols:
         df = df.sort_values(sort_cols)
 
+    result["candidate_count_all"] = int(len(df))
     latest = df.iloc[-1]
     latest_fy = latest.get("CurFYEn") if "CurFYEn" in df.columns else None
 
@@ -389,74 +384,100 @@ def _jquants_forecast_revision(ticker: str):
     if sort_cols:
         same_fy = same_fy.sort_values([c for c in sort_cols if c in same_fy.columns])
 
-    # FOPが変わったレコードだけ残す
-    distinct_rows = []
-    last_value = None
-    have_last = False
-    for _, row in same_fy.iterrows():
-        value = float(row["_FOP_NUM"])
-        if (not have_last) or value != last_value:
-            distinct_rows.append(row)
-            last_value = value
-            have_last = True
+    result["candidate_count_same_fy"] = int(len(same_fy))
 
-    if len(distinct_rows) < 2:
+    def distinct_rows(frame):
+        rows = []
+        last = None
+        has_last = False
+        for _, row in frame.iterrows():
+            v = float(row["_FOP_NUM"])
+            if (not has_last) or v != last:
+                rows.append(row)
+                last = v
+                has_last = True
+        return rows
+
+    same_distinct = distinct_rows(same_fy)
+    comparison = None
+    scope = None
+
+    if len(same_distinct) >= 2:
+        comparison = (same_distinct[-2], same_distinct[-1])
+        scope = "same_fiscal_year"
+    else:
+        all_distinct = distinct_rows(df)
+        if len(all_distinct) >= 2:
+            cur = all_distinct[-1]
+            cur_fy = cur.get("CurFYEn") if "CurFYEn" in df.columns else None
+            for prev in reversed(all_distinct[:-1]):
+                prev_fy = prev.get("CurFYEn") if "CurFYEn" in df.columns else None
+                if (
+                    cur_fy is not None and prev_fy is not None
+                    and pd.notna(cur_fy) and pd.notna(prev_fy)
+                    and str(cur_fy) == str(prev_fy)
+                    and float(prev["_FOP_NUM"]) != float(cur["_FOP_NUM"])
+                ):
+                    comparison = (prev, cur)
+                    scope = "all_history_same_fiscal_year"
+                    break
+            if comparison is None:
+                scope = "prior_forecast_found_but_fiscal_year_mismatch"
+
+    if comparison is None:
+        d = latest.get("DiscDate") if "DiscDate" in latest else None
         result.update({
             "status": "single_forecast",
-            "latest_disclosure_date": (
-                str(latest.get("DiscDate").date())
-                if "DiscDate" in latest and pd.notna(latest.get("DiscDate"))
-                else None
-            ),
-            "fiscal_year_end": (
-                str(latest_fy.date()) if hasattr(latest_fy, "date")
-                else (str(latest_fy) if latest_fy is not None else None)
-            ),
+            "latest_disclosure_date": str(d.date()) if pd.notna(d) and hasattr(d, "date") else None,
+            "fiscal_year_end": str(latest_fy.date()) if hasattr(latest_fy, "date") else (str(latest_fy) if latest_fy is not None else None),
             "latest_forecast_operating_profit": float(latest["_FOP_NUM"]),
             "records_compared": 1,
-            "note": "同一期末の比較可能な過去会社予想が不足しているため修正率は未算定。",
+            "comparison_scope": scope or "same_fiscal_year_only",
+            "note": "同一期末で比較可能な過去会社予想が不足。年度跨ぎは誤比較防止のため採用していません。",
         })
         return result
 
-    prev = distinct_rows[-2]
-    cur = distinct_rows[-1]
-
+    prev, cur = comparison
     cur_fop = float(cur["_FOP_NUM"])
     prev_fop = float(prev["_FOP_NUM"])
-    op_rev = None if prev_fop == 0 else (cur_fop / abs(prev_fop) - 1) * 100
 
-    def _revision(col):
-        if col not in same_fy.columns:
+    if prev_fop == 0 or (prev_fop < 0 < cur_fop) or (prev_fop > 0 > cur_fop):
+        op_rev = None
+        status = "sign_flip"
+    else:
+        op_rev = (cur_fop / abs(prev_fop) - 1) * 100
+        status = "ok"
+
+    def revision(col):
+        if col not in df.columns:
             return None
         c = pd.to_numeric(pd.Series([cur.get(col)]), errors="coerce").iloc[0]
         p = pd.to_numeric(pd.Series([prev.get(col)]), errors="coerce").iloc[0]
         if pd.isna(c) or pd.isna(p) or p == 0:
             return None
-        return (float(c) / abs(float(p)) - 1) * 100
+        c, p = float(c), float(p)
+        if (p < 0 < c) or (p > 0 > c):
+            return None
+        return (c / abs(p) - 1) * 100
 
-    sales_rev = _revision("FSales")
-    eps_rev = _revision("FEPS")
+    cur_d = cur.get("DiscDate") if "DiscDate" in cur else None
+    prev_d = prev.get("DiscDate") if "DiscDate" in prev else None
 
     result.update({
         "available": op_rev is not None,
-        "status": "ok" if op_rev is not None else "comparison_unavailable",
-        "latest_disclosure_date": (
-            str(cur.get("DiscDate").date())
-            if "DiscDate" in cur and pd.notna(cur.get("DiscDate"))
-            else None
-        ),
-        "fiscal_year_end": (
-            str(latest_fy.date()) if hasattr(latest_fy, "date")
-            else (str(latest_fy) if latest_fy is not None else None)
-        ),
+        "status": status,
+        "latest_disclosure_date": str(cur_d.date()) if pd.notna(cur_d) and hasattr(cur_d, "date") else None,
+        "previous_disclosure_date": str(prev_d.date()) if pd.notna(prev_d) and hasattr(prev_d, "date") else None,
+        "fiscal_year_end": str(latest_fy.date()) if hasattr(latest_fy, "date") else (str(latest_fy) if latest_fy is not None else None),
         "latest_forecast_operating_profit": cur_fop,
         "previous_forecast_operating_profit": prev_fop,
         "guidance_revision_pct": round(op_rev, 2) if op_rev is not None else None,
-        "forecast_sales_revision_pct": round(sales_rev, 2) if sales_rev is not None else None,
-        "forecast_eps_revision_pct": round(eps_rev, 2) if eps_rev is not None else None,
+        "forecast_sales_revision_pct": round(revision("FSales"), 2) if revision("FSales") is not None else None,
+        "forecast_eps_revision_pct": round(revision("FEPS"), 2) if revision("FEPS") is not None else None,
         "is_upward_revision": bool(op_rev > 0) if op_rev is not None else None,
         "is_downward_revision": bool(op_rev < 0) if op_rev is not None else None,
         "records_compared": 2,
-        "note": "同一通期末の直近2つの異なる会社予想営業利益(FOP)を比較。プランにより配信遅延があります。",
+        "comparison_scope": scope,
+        "note": "同一通期末のFOP履歴を広めに探索して比較。年度跨ぎや符号反転は誤判定防止のため慎重に扱います。",
     })
     return result
