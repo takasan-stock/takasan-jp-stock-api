@@ -144,8 +144,8 @@ def _missing_required(metrics, names):
 
 def _analyze_one(ticker: str):
     ticker = ticker.strip().upper().replace(".T", "")
-    if len(ticker) != 4 or not ticker.isdigit():
-        raise HTTPException(status_code=400, detail="4桁の証券コードを指定してください。")
+    if len(ticker) != 4 or not ticker.isalnum() or not ticker.isascii():
+        raise HTTPException(status_code=400, detail="英数字4文字の証券コードを指定してください。")
 
     data = get_company_snapshot(ticker)
     if data is None:

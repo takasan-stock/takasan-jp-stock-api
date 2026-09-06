@@ -45,9 +45,9 @@ def _safe_margin(profit, revenue):
 
 def _normalize_code(value):
     if value is None or pd.isna(value): return None
-    text = re.sub(r"\.0$", "", str(value).strip())
-    m = re.search(r"(\d{4})", text)
-    return m.group(1) if m else None
+    text = re.sub(r"\.0$", "", str(value).strip()).upper()
+    text = re.sub(r"^TSE:\s*", "", text)
+    return text if re.fullmatch(r"[0-9A-Z]{4}", text) else None
 
 def _load_jpx_name_map():
     global _JPX_NAME_CACHE
