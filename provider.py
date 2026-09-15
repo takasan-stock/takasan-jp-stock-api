@@ -6,6 +6,11 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+from cash_value import build_cash_value_inputs, calculate_cash_value
+from coverage_v11 import build_data_coverage
+from financial_history import build_financial_history_bundle, build_metric_lineage
+from growth_quality import calculate_growth_quality
+
 JPX_MASTER_URLS = [
     "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls",
     "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xlsx",
@@ -247,6 +252,7 @@ def get_company_snapshot(ticker: str):
     net_debt = _net_debt(info, annual_bs, quarterly_bs)
     market_momentum = _market_momentum(t)
     forecast_revision = _jquants_forecast_revision(ticker)
+    retrieved_at = datetime.utcnow().isoformat(timespec="seconds")+"Z"
 
     fields = {
         "revenue_growth_pct": revenue_growth,
@@ -263,12 +269,78 @@ def get_company_snapshot(ticker: str):
     }
     missing = [k for k,v in fields.items() if v is None]
     coverage = round((len(fields)-len(missing))/len(fields)*100,1)
+    fiscal_period = str(latest.date()) if hasattr(latest,"date") else str(latest)
+    financial_history = build_financial_history_bundle(
+        financials=financials,
+        annual_cash_flow=annual_cf,
+        annual_balance_sheet=annual_bs,
+        retrieved_at=retrieved_at,
+        currency=str(info.get("financialCurrency")) if info.get("financialCurrency") else None,
+    )
+    reported_market_cap = _safe_float(info.get("marketCap"))
+    market_cap = reported_market_cap
+    market_cap_source = "Yahoo Finance marketCap"
+    if market_cap is None and market_price is not None and shares is not None:
+        market_cap = market_price * shares
+        market_cap_source = "derived from market price and shares outstanding"
+    trailing_per = _safe_float(info.get("trailingPE"))
+    sector = " / ".join(
+        str(value).strip()
+        for value in (info.get("sector"), info.get("industry"))
+        if value and str(value).strip()
+    ) or None
+    cash_value_inputs = build_cash_value_inputs(
+        financial_history,
+        fiscal_period=fiscal_period,
+        market_cap=market_cap,
+        per=trailing_per,
+        retrieved_at=retrieved_at,
+        market_cap_source=market_cap_source,
+        per_source="Yahoo Finance trailingPE",
+    )
+    cash_value = calculate_cash_value(
+        ticker,
+        cash_value_inputs,
+        sector=sector,
+        retrieved_at=retrieved_at,
+    )
+    growth_quality = calculate_growth_quality(
+        ticker,
+        financial_history,
+        per=trailing_per,
+        per_source="Yahoo Finance trailingPE",
+        retrieved_at=retrieved_at,
+    )
+    metric_lineage = build_metric_lineage(
+        metrics={**fields, **{
+            "guidance_revision_pct": forecast_revision.get("guidance_revision_pct"),
+            "price_return_5d_pct": market_momentum.get("price_return_5d_pct"),
+            "price_return_20d_pct": market_momentum.get("price_return_20d_pct"),
+            "volume_ratio_20d": market_momentum.get("volume_ratio_20d"),
+            "rs_63d_pct": market_momentum.get("rs_63d_pct"),
+            "rs_126d_pct": market_momentum.get("rs_126d_pct"),
+        }},
+        fiscal_period=fiscal_period,
+        retrieved_at=retrieved_at,
+        forecast_revision=forecast_revision,
+    )
+    coverage_v1_1 = build_data_coverage(
+        ticker,
+        fiscal_period=fiscal_period,
+        financial_history=financial_history,
+        metrics=fields,
+        metric_lineage=metric_lineage,
+        cash_value=cash_value,
+        growth_quality=growth_quality,
+        market_momentum=market_momentum,
+        retrieved_at=retrieved_at,
+    )
 
     return {
         "ticker": ticker,
         "symbol": symbol,
         "company_name": _company_name(info,ticker,symbol),
-        "fiscal_period": str(latest.date()) if hasattr(latest,"date") else str(latest),
+        "fiscal_period": fiscal_period,
         "comparison_period": {
             "latest": str(latest.date()) if hasattr(latest,"date") else str(latest),
             "previous": str(previous.date()) if hasattr(previous,"date") else str(previous),
@@ -276,12 +348,17 @@ def get_company_snapshot(ticker: str):
         },
         "data_status":"external_yfinance+jpx_name_master",
         "data_source":"Yahoo Finance via yfinance + JPX name master",
-        "data_retrieved_at_utc":datetime.utcnow().isoformat(timespec="seconds")+"Z",
+        "data_retrieved_at_utc":retrieved_at,
         "data_coverage_pct":coverage,
         "missing_fields":missing,
         "market_price":market_price,
         "market_momentum": market_momentum,
         "forecast_revision": forecast_revision,
+        "financial_history_v1_1": financial_history,
+        "metric_lineage_v1_1": metric_lineage,
+        "cash_value_v1_1": cash_value,
+        "growth_quality_v1_1": growth_quality,
+        "coverage_v1_1": coverage_v1_1,
         "metrics":{
             "revenue_growth_pct":revenue_growth,
             "operating_profit_growth_pct":operating_profit_growth,

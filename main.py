@@ -14,6 +14,8 @@ from scoring import (
     run_dcf_scenarios,
 )
 from provider import get_company_snapshot
+from v11_foundation import get_v11_public_metadata
+from classification_v11 import classify_v11
 
 
 class BatchAnalyzeRequest(BaseModel):
@@ -49,6 +51,7 @@ def _summary_from_analysis(result):
     scenario_block = scenarios.get("scenarios") or {}
     base = scenario_block.get("base") or {}
     mispricing = result.get("mispricing") or {}
+    classification = result.get("classification_v1_1") or {}
 
     return {
         "ticker": result.get("ticker"),
@@ -70,6 +73,7 @@ def _summary_from_analysis(result):
         "mispricing_score": mispricing.get("score"),
         "data_coverage_pct": result.get("data_coverage_pct"),
         "missing_fields": result.get("missing_fields"),
+        "classification_v1_1": classification,
     }
 
 
@@ -110,12 +114,13 @@ def root():
         "version": "1.0.0",
         "status": "ok",
         "docs": "/docs",
+        "v1_1": get_v11_public_metadata(),
     }
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok", "version": "1.0.0", "v1_1": get_v11_public_metadata()}
 
 
 @app.post("/score/growth")
@@ -292,6 +297,18 @@ def _analyze_one(ticker: str):
     else:
         rank = "D"
 
+    classification_v1_1 = classify_v11(
+        ticker,
+        growth_result=growth_result,
+        change_result=change_result,
+        momentum_result=momentum_result,
+        mispricing_result=mispricing_result,
+        forecast_revision=data.get("forecast_revision"),
+        cash_value=data.get("cash_value_v1_1"),
+        growth_quality=data.get("growth_quality_v1_1"),
+        coverage=data.get("coverage_v1_1"),
+    )
+
     return {
         "ticker": ticker,
         "company_name": data["company_name"],
@@ -304,6 +321,12 @@ def _analyze_one(ticker: str):
         "missing_fields": data["missing_fields"],
         "market_price": market_price,
         "forecast_revision": data.get("forecast_revision"),
+        "financial_history_v1_1": data.get("financial_history_v1_1"),
+        "metric_lineage_v1_1": data.get("metric_lineage_v1_1"),
+        "cash_value_v1_1": data.get("cash_value_v1_1"),
+        "growth_quality_v1_1": data.get("growth_quality_v1_1"),
+        "coverage_v1_1": data.get("coverage_v1_1"),
+        "classification_v1_1": classification_v1_1,
         "metrics": m,
         "growth": {"result": growth_result, "missing_fields": growth_missing},
         "change": {
@@ -331,6 +354,7 @@ def _analyze_one(ticker: str):
             "momentum_v2": True,
             "jquants_forecast_revision": bool(m.get("jquants_revision_available", False)),
         },
+        "v1_1": get_v11_public_metadata(),
         "note": "外部データに欠損がある場合は架空値を生成せず、missing_fieldsに明示します。",
     }
 
@@ -393,6 +417,7 @@ def analyze_batch(req: BatchAnalyzeRequest):
 
     return {
         "version": "1.0.0",
+        "v1_1": get_v11_public_metadata(),
         "sort_by": sort_by,
         "requested_count": len(tickers),
         "success_count": len(rows),

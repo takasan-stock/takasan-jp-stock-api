@@ -1,0 +1,261 @@
+{
+  "version": "1.1.0",
+  "status": "step_7_complete",
+  "feature_flags": {
+    "financial_history_lineage": true,
+    "tdnet_metadata": true,
+    "tdnet_auto_fetch": false,
+    "cash_value": true,
+    "growth_quality": true,
+    "coverage_v1_1": true,
+    "automatic_classification": true,
+    "ranking_ui_v1_1": true
+  },
+  "missing_data_statuses": [
+    "available",
+    "not_acquired",
+    "not_calculable",
+    "not_applicable",
+    "short_history"
+  ],
+  "data_source_policy": {
+    "version": "1.1.0",
+    "requirements": [
+      "Use the highest-priority available source.",
+      "Do not mix fiscal periods or consolidated and non-consolidated values.",
+      "Do not replace a missing value with zero.",
+      "Record source, source field, fiscal period, and retrieval time for every metric."
+    ],
+    "priorities": {
+      "long_term_financial_history": ["EDINET", "J-Quants financial details", "Yahoo Finance"],
+      "balance_sheet_details": ["EDINET", "J-Quants financial details", "Yahoo Finance"],
+      "latest_company_forecast": ["J-Quants financial summary", "TDnet", "Yahoo Finance"],
+      "income_and_cash_flow_history": ["EDINET", "J-Quants financial details", "Yahoo Finance"],
+      "price_volume_market_cap": ["Yahoo Finance", "J-Quants", "derived official financial data"],
+      "company_sector_market": ["JPX name master", "J-Quants listed issue information", "Yahoo Finance"],
+      "latest_disclosure": ["TDnet official data", "J-Quants TDnet add-on"]
+    }
+  },
+  "cash_value_score": {
+    "active_profile": "balanced",
+    "calculation": {
+      "inventory_discount_factor": 0.3,
+      "investment_securities_factor": 0.7,
+      "ncr_calculation_cap_pct": 99.99,
+      "missing_component_policy": "not_calculable",
+      "not_applicable_component_policy": "exclude_and_renormalize"
+    },
+    "scoring": {
+      "ncr": {"minimum_pct": 0.0, "full_score_pct": 100.0},
+      "per_cn": {
+        "bands": [
+          {"lte": 5.0, "score": 100.0},
+          {"lte": 10.0, "score": 80.0},
+          {"lte": 15.0, "score": 60.0},
+          {"lte": 20.0, "score": 40.0}
+        ],
+        "default_score": 20.0
+      },
+      "dpup": {
+        "bands": [
+          {"gte": 2.0, "score": 100.0},
+          {"gte": 1.5, "score": 80.0},
+          {"gte": 1.0, "score": 60.0},
+          {"gte": 0.5, "score": 40.0}
+        ],
+        "default_score": 20.0
+      },
+      "roic": {"minimum_pct": 0.0, "full_score_pct": 20.0},
+      "sales_cagr_5y_gt_per": {"matched_score": 100.0, "failed_score": 0.0},
+      "operating_cash_flow": {"positive_score": 100.0, "non_positive_score": 0.0}
+    },
+    "dpup_not_applicable_sectors": {
+      "financial": ["financial", "bank", "banking", "securities", "insurance", "金融", "銀行", "証券", "保険"],
+      "real_estate": ["real estate", "reit", "不動産", "リート"]
+    },
+    "profiles": {
+      "balanced": {
+        "ncr": 0.25,
+        "per_cn": 0.20,
+        "dpup": 0.20,
+        "sales_cagr_5y_gt_per": 0.15,
+        "roic": 0.10,
+        "operating_cash_flow": 0.10
+      }
+    }
+  },
+  "growth_quality": {
+    "primary_metric": "revenue_cagr_5y",
+    "auxiliary_metric": "eps_cagr_5y",
+    "acceleration_threshold_points": 2.0,
+    "margin_trend_threshold_points": 1.0,
+    "standard_history_minimum_points": 6,
+    "limited_history_minimum_points": 4,
+    "ipo_short_history_minimum_points": 2,
+    "missing_component_policy": "exclude_and_renormalize_when_primary_available",
+    "score": {
+      "weights": {
+        "revenue_cagr_5y": 0.35,
+        "eps_cagr_5y": 0.05,
+        "growth_trend": 0.15,
+        "gross_margin_trend": 0.10,
+        "operating_margin_trend": 0.10,
+        "operating_cash_flow": 0.10,
+        "roic": 0.10,
+        "revenue_cagr_5y_gt_per": 0.05
+      },
+      "growth_full_score_pct": 20.0,
+      "roic_full_score_pct": 20.0,
+      "trend_scores": {
+        "accelerating": 100.0,
+        "maintaining": 60.0,
+        "decelerating": 20.0,
+        "improving": 100.0,
+        "stable": 60.0,
+        "deteriorating": 20.0
+      }
+    }
+  },
+  "classification": {
+    "result_states": ["matched", "not_matched", "insufficient_data"],
+    "trace_fields": ["matched_conditions", "failed_conditions", "missing_conditions"],
+    "primary_priority": ["main_candidate", "early_candidate", "momentum_candidate"],
+    "thresholds": {
+      "main_candidate": {
+        "growth_min": 70.0,
+        "change_min": 70.0,
+        "momentum_min": 70.0,
+        "cash_value_score_min": 70.0
+      },
+      "early_candidate": {
+        "growth_min": 65.0,
+        "change_min": 65.0,
+        "momentum_min": 40.0,
+        "momentum_max": 69.9,
+        "ncr_min_pct": 30.0,
+        "dpup_min": 1.0,
+        "mispricing_min": 65.0,
+        "blocking_warning_count": 2
+      },
+      "momentum_candidate": {
+        "momentum_min": 75.0,
+        "volume_ratio_min": 1.5,
+        "relative_strength_min_pct": 5.0
+      },
+      "overheat_risk": {
+        "momentum_gate_min": 85.0,
+        "price_return_5d_min_pct": 10.0,
+        "price_return_20d_min_pct": 20.0,
+        "mispricing_max": 40.0,
+        "per_min": 30.0,
+        "per_cn_min": 25.0,
+        "required_points": 3,
+        "minimum_evaluable_signals": 3
+      },
+      "secondary_tags": {
+        "momentum_strong_min": 75.0,
+        "cash_value_high_min": 70.0,
+        "growth_quality_high_min": 70.0
+      }
+    },
+    "early_candidate_blocking_warning_codes": [
+      "GROWTH_DECELERATING",
+      "GROSS_MARGIN_DETERIORATING",
+      "OPERATING_MARGIN_DETERIORATING",
+      "OPERATING_CASH_FLOW_NON_POSITIVE"
+    ]
+  },
+  "coverage": {
+    "confidence_thresholds": {
+      "high_min_pct": 90.0,
+      "medium_min_pct": 70.0
+    },
+    "not_applicable_is_excluded_from_denominator": true,
+    "roic_sanity_thresholds": {
+      "high_review_pct": 50.0,
+      "extreme_review_pct": 100.0
+    },
+    "classification_required_items": {
+      "early_candidate": [
+        "growth_quality.revenue_cagr_5y",
+        "cash_value.ncr",
+        "cash_value.dpup",
+        "core_financial.revenue_growth_pct"
+      ]
+    }
+  },
+  "tdnet": {
+    "auto_fetch_requires_jpx_approval": true,
+    "jquants_reflection_categories": [
+      "financial_results",
+      "earnings_forecast_revision",
+      "dividend_forecast_revision"
+    ],
+    "status_rules": {
+      "deleted": ["開示事項の削除", "開示資料の削除", "削除のお知らせ"],
+      "correction": ["訂正", "一部訂正"]
+    },
+    "classification_rules": [
+      {
+        "category": "earnings_forecast_revision",
+        "label": "業績予想修正",
+        "importance": "high",
+        "match_any": ["業績予想の修正", "業績予想修正", "通期業績予想の修正", "連結業績予想の修正"]
+      },
+      {
+        "category": "dividend_forecast_revision",
+        "label": "配当予想修正",
+        "importance": "high",
+        "match_any": ["配当予想の修正", "配当予想修正", "期末配当予想の修正", "配当予想に関するお知らせ"]
+      },
+      {
+        "category": "financial_results",
+        "label": "決算短信",
+        "importance": "high",
+        "match_any": ["決算短信"]
+      },
+      {
+        "category": "share_buyback",
+        "label": "自己株式取得",
+        "importance": "high",
+        "match_any": ["自己株式の取得", "自己株式取得", "自己株式の消却"]
+      },
+      {
+        "category": "stock_split",
+        "label": "株式分割",
+        "importance": "medium",
+        "match_any": ["株式分割", "株式の分割"]
+      },
+      {
+        "category": "merger_acquisition",
+        "label": "M&A",
+        "importance": "high",
+        "match_any": ["株式取得（子会社化）", "株式取得(子会社化)", "子会社化", "吸収合併", "株式交換", "公開買付け", "事業譲受", "会社分割"]
+      },
+      {
+        "category": "new_business",
+        "label": "新規事業",
+        "importance": "medium",
+        "match_any": ["新規事業", "新たな事業", "新事業開始"]
+      },
+      {
+        "category": "major_order",
+        "label": "大型受注",
+        "importance": "high",
+        "match_any": ["大型受注", "大口受注", "受注に関するお知らせ"]
+      },
+      {
+        "category": "medium_term_plan",
+        "label": "中期経営計画",
+        "importance": "medium",
+        "match_any": ["中期経営計画", "中期経営計画の策定", "中期経営計画策定"]
+      },
+      {
+        "category": "equity_financing",
+        "label": "新株予約権・増資",
+        "importance": "high",
+        "match_any": ["新株予約権", "第三者割当増資", "公募増資", "新株式発行", "株式の発行"]
+      }
+    ]
+  }
+}

@@ -1,0 +1,132 @@
+[
+  {
+    "disclosure_id": "TD-6857-001",
+    "disclosed_at": "2026-01-28T15:00:00+09:00",
+    "ticker": "6857",
+    "company_name": "株式会社アドバンテスト",
+    "title": "通期業績予想の修正に関するお知らせ",
+    "fiscal_period": "2026-03-31",
+    "comparison_payload": {"forecast_operating_profit": 454000000000},
+    "official_material_url": "https://example.test/tdnet/TD-6857-001.pdf",
+    "retrieved_at": "2026-09-09T00:00:00Z"
+  },
+  {
+    "disclosure_id": "TD-6857-001",
+    "disclosed_at": "2026-01-28T15:00:00+09:00",
+    "ticker": "6857",
+    "company_name": "株式会社アドバンテスト",
+    "title": "通期業績予想の修正に関するお知らせ",
+    "fiscal_period": "2026-03-31",
+    "comparison_payload": {"forecast_operating_profit": 454000000000},
+    "official_material_url": "https://example.test/tdnet/TD-6857-001.pdf",
+    "retrieved_at": "2026-09-09T00:05:00Z"
+  },
+  {
+    "disclosure_id": "TD-6857-002",
+    "disclosed_at": "2026-01-28T16:00:00+09:00",
+    "ticker": "6857",
+    "company_name": "株式会社アドバンテスト",
+    "title": "（訂正）通期業績予想の修正に関するお知らせ",
+    "fiscal_period": "2026-03-31",
+    "comparison_payload": {"forecast_operating_profit": 455000000000},
+    "official_material_url": "https://example.test/tdnet/TD-6857-002.pdf",
+    "supersedes_disclosure_id": "TD-6857-001",
+    "retrieved_at": "2026-09-09T00:10:00Z"
+  },
+  {
+    "disclosure_id": "TD-6857-003",
+    "disclosed_at": "2026-01-28T17:00:00+09:00",
+    "ticker": "6857",
+    "company_name": "株式会社アドバンテスト",
+    "title": "開示資料の削除：通期業績予想の修正に関するお知らせ",
+    "fiscal_period": "2026-03-31",
+    "official_material_url": "https://example.test/tdnet/TD-6857-003.pdf",
+    "supersedes_disclosure_id": "TD-6857-002",
+    "retrieved_at": "2026-09-09T00:15:00Z"
+  },
+  {
+    "disclosure_id": "TD-472A-001",
+    "disclosed_at": "2026-02-10T15:00:00+09:00",
+    "ticker": "472a",
+    "company_name": "株式会社ミラティブ",
+    "title": "株式取得（子会社化）に関するお知らせ",
+    "official_material_url": "https://example.test/tdnet/TD-472A-001.pdf",
+    "retrieved_at": "2026-09-09T00:20:00Z"
+  },
+  {
+    "disclosure_id": "TD-6857-004",
+    "disclosed_at": "2026-04-24T15:00:00+09:00",
+    "ticker": "TSE:6857",
+    "company_name": "株式会社アドバンテスト",
+    "title": "2026年3月期 決算短信〔IFRS〕（連結）",
+    "fiscal_period": "2026-03-31",
+    "comparison_payload": {"revenue": 900000000000, "operating_profit": 400000000000},
+    "official_material_url": "https://example.test/tdnet/TD-6857-004.pdf",
+    "retrieved_at": "2026-09-09T00:25:00Z"
+  },
+  {
+    "disclosure_id": "TD-6857-005",
+    "disclosed_at": "2026-04-24T15:05:00+09:00",
+    "ticker": "6857",
+    "company_name": "株式会社アドバンテスト",
+    "title": "配当予想の修正に関するお知らせ",
+    "fiscal_period": "2026-03-31",
+    "comparison_payload": {"annual_dividend_per_share": 42},
+    "official_material_url": "https://example.test/tdnet/TD-6857-005.pdf",
+    "retrieved_at": "2026-09-09T00:30:00Z"
+  },
+  {
+    "disclosure_id": "TD-6857-006",
+    "disclosed_at": "2026-04-24T15:10:00+09:00",
+    "ticker": "6857",
+    "company_name": "株式会社アドバンテスト",
+    "title": "自己株式の取得に関するお知らせ",
+    "official_material_url": "https://example.test/tdnet/TD-6857-006.pdf",
+    "retrieved_at": "2026-09-09T00:35:00Z"
+  },
+  {
+    "disclosure_id": "TD-6857-007",
+    "disclosed_at": "2026-04-24T15:15:00+09:00",
+    "ticker": "6857",
+    "company_name": "株式会社アドバンテスト",
+    "title": "株式分割に関するお知らせ",
+    "official_material_url": "https://example.test/tdnet/TD-6857-007.pdf",
+    "retrieved_at": "2026-09-09T00:40:00Z"
+  },
+  {
+    "disclosure_id": "TD-472A-002",
+    "disclosed_at": "2026-03-01T15:00:00+09:00",
+    "ticker": "472A",
+    "company_name": "株式会社ミラティブ",
+    "title": "新規事業開始に関するお知らせ",
+    "official_material_url": "https://example.test/tdnet/TD-472A-002.pdf",
+    "retrieved_at": "2026-09-09T00:45:00Z"
+  },
+  {
+    "disclosure_id": "TD-472A-003",
+    "disclosed_at": "2026-03-01T15:05:00+09:00",
+    "ticker": "472A",
+    "company_name": "株式会社ミラティブ",
+    "title": "大型受注に関するお知らせ",
+    "official_material_url": "https://example.test/tdnet/TD-472A-003.pdf",
+    "retrieved_at": "2026-09-09T00:50:00Z"
+  },
+  {
+    "disclosure_id": "TD-472A-004",
+    "disclosed_at": "2026-03-01T15:10:00+09:00",
+    "ticker": "472A",
+    "company_name": "株式会社ミラティブ",
+    "title": "中期経営計画の策定に関するお知らせ",
+    "official_material_url": "https://example.test/tdnet/TD-472A-004.pdf",
+    "retrieved_at": "2026-09-09T00:55:00Z"
+  },
+  {
+    "disclosure_id": "TD-472A-005",
+    "disclosed_at": "2026-03-01T15:15:00+09:00",
+    "ticker": "472A",
+    "company_name": "株式会社ミラティブ",
+    "title": "第三者割当による新株予約権の発行に関するお知らせ",
+    "official_material_url": "https://example.test/tdnet/TD-472A-005.pdf",
+    "retrieved_at": "2026-09-09T01:00:00Z"
+  }
+]
