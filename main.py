@@ -16,6 +16,7 @@ from scoring import (
 from provider import get_company_snapshot
 from v11_foundation import get_v11_public_metadata
 from classification_v11 import classify_v11
+from v3_api import router as v3_router
 
 
 class BatchAnalyzeRequest(BaseModel):
@@ -105,6 +106,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(v3_router)
 
 
 @app.get("/")
