@@ -17,6 +17,7 @@ from provider import get_company_snapshot
 from v11_foundation import get_v11_public_metadata
 from classification_v11 import classify_v11
 from v3_api import router as v3_router
+from v3_contracts import CANONICAL_SOURCE, V3_CONTRACT_VERSION, V3_ENGINE_MODULES
 
 
 class BatchAnalyzeRequest(BaseModel):
@@ -122,7 +123,17 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "1.0.0", "v1_1": get_v11_public_metadata()}
+    return {
+        "status": "ok",
+        "version": "1.0.0",
+        "v1_1": get_v11_public_metadata(),
+        "release": {
+            "render_commit": os.getenv("RENDER_GIT_COMMIT"),
+            "v3_contract_version": V3_CONTRACT_VERSION,
+            "v3_source": CANONICAL_SOURCE,
+            "v3_engine_modules": V3_ENGINE_MODULES,
+        },
+    }
 
 
 @app.post("/score/growth")

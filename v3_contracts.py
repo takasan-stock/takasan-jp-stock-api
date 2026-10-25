@@ -6,6 +6,17 @@ from pydantic import BaseModel, Field
 
 
 CANONICAL_SOURCE = "takasan-stock/stock-analyzer@main"
+V3_CONTRACT_VERSION = "v3-contract-1"
+V3_ENGINE_MODULES = {
+    "action_status": "861ee394c293984cebe0b483e5888a28390b841e",
+    "priority_board": "1e4c668bc7ff442cb639437ab10e73093b9762bd",
+    "deep_fcf": "ab45e222054b6fd6f3c649ae40e9fe379bf932fc",
+    "multiple_expansion": "4db656b13be1e511204e5938650bb81ab896f212",
+    "me_daily": "228f3e95be237d2986200c500f8a4a56c9efe295",
+    "short_cover": "5c13babf828d9d1ba0115aab22bc686ebb647298",
+    "entry": "9de3152e368d3ec2927bd79f1745266216f5384c",
+    "pre_trade": "c16756737623feb2441496b7d9864d4bd5976597",
+}
 DataT = TypeVar("DataT")
 
 
