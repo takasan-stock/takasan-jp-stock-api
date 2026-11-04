@@ -1,6 +1,7 @@
 import time
 from collections import OrderedDict, deque
 from concurrent.futures import Future
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from threading import Lock
@@ -19,6 +20,23 @@ class JQuantsError(RuntimeError):
         self.status = status
         self.retryable = retryable
         super().__init__(reason if status is None else f"{reason} (HTTP {status})")
+
+
+@dataclass
+class JQuantsRequestMetrics:
+    logical_requests: int = 0
+    http_attempts: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    cache_shared: int = 0
+    cache_stale: int = 0
+    retries: int = 0
+    rate_limited: int = 0
+
+
+request_metrics: ContextVar[JQuantsRequestMetrics | None] = ContextVar(
+    "jquants_request_metrics", default=None,
+)
 
 
 class LightRateLimiter:
@@ -84,8 +102,12 @@ class JQuantsClient:
 
     def _page(self, endpoint, params):
         bucket = "financial" if endpoint == _FINANCIAL else "general"
+        metrics = request_metrics.get()
         for attempt in range(self._retries + 1):
             self._limiter.acquire(bucket)
+            if metrics is not None:
+                metrics.http_attempts += 1
+                metrics.retries += int(attempt > 0)
             retry_after = 0
             try:
                 response = self._get(
@@ -110,6 +132,8 @@ class JQuantsClient:
                     return payload
                 error = JQuantsError("J-Quants request failed", status, retryable=status == 429 or status >= 500)
                 if status == 429:
+                    if metrics is not None:
+                        metrics.rate_limited += 1
                     header = response.headers.get("Retry-After", "").strip()
                     if header.isascii() and header.isdecimal():
                         retry_after = float(header)
@@ -132,17 +156,29 @@ class JQuantsClient:
         raise JQuantsError("J-Quants pagination limit exceeded")
 
     def _cached(self, key, fetch, *, allow_stale=False):
+        metrics = request_metrics.get()
+        if metrics is not None:
+            metrics.logical_requests += 1
         with self._lock:
             old = self._cache.get(key)
             if old and self._clock() - old.timestamp < self._ttl:
+                if metrics is not None:
+                    metrics.cache_hits += 1
                 self._cache.move_to_end(key)
                 return old, "hit"
             pending = self._pending.get(key)
             leader = pending is None
             if leader:
                 pending = self._pending[key] = Future()
+            if metrics is not None:
+                if leader:
+                    metrics.cache_misses += 1
+                else:
+                    metrics.cache_shared += 1
         if not leader:
             value, status = pending.result()
+            if metrics is not None and status == "stale":
+                metrics.cache_stale += 1
             return value, "stale" if status == "stale" else "shared"
         try:
             try:
@@ -151,6 +187,8 @@ class JQuantsClient:
                 if not (allow_stale and error.retryable and old
                         and self._clock() - old.timestamp < self._stale_ttl):
                     raise
+                if metrics is not None:
+                    metrics.cache_stale += 1
                 result = old, "stale"
             else:
                 with self._lock:
