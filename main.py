@@ -17,6 +17,7 @@ from provider import get_company_snapshot
 from v11_foundation import get_v11_public_metadata
 from classification_v11 import classify_v11
 from v3_api import router as v3_router
+from jquants_pretrade_api import router as jquants_pretrade_router
 from v3_contracts import CANONICAL_SOURCE, V3_CONTRACT_VERSION, V3_ENGINE_MODULES
 
 
@@ -108,6 +109,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(v3_router)
+app.include_router(jquants_pretrade_router)
 
 
 @app.get("/")

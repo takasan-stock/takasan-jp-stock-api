@@ -1,3 +1,4 @@
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Mapping
@@ -60,3 +61,30 @@ class DataQuality:
     stale: bool
     missing_fields: tuple[str, ...]
     data_quality: str
+
+
+@dataclass(frozen=True)
+class TradingDay:
+    date: date
+    hol_div: str
+    is_trading_day: bool
+
+
+@dataclass(frozen=True)
+class TradingCalendar:
+    start: date
+    end: date
+    days: tuple[TradingDay, ...]
+    trading_dates: tuple[date, ...]
+
+    def next_trading_day(self, day: date) -> date | None:
+        if not self.start <= day <= self.end:
+            return None
+        index = bisect_right(self.trading_dates, day)
+        return self.trading_dates[index] if index < len(self.trading_dates) else None
+
+    def previous_trading_day(self, day: date) -> date | None:
+        if not self.start <= day <= self.end:
+            return None
+        index = bisect_left(self.trading_dates, day)
+        return self.trading_dates[index - 1] if index else None

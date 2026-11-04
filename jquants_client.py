@@ -8,10 +8,10 @@ from threading import Lock
 import requests
 
 from market_data_normalizer import (
-    BAR_FIELDS, DataQualityError, normalize_daily, normalize_financials,
+    BAR_FIELDS, DataQualityError, normalize_calendar, normalize_daily, normalize_financials,
     resolve_instrument, ticker_code,
 )
-from market_data_types import DailyBar, DataQuality, Instrument
+from market_data_types import DailyBar, DataQuality, Instrument, TradingCalendar
 
 
 class JQuantsError(RuntimeError):
@@ -47,6 +47,7 @@ _LIGHT_LIMITER = LightRateLimiter()
 _DAILY = "/v2/equities/bars/daily"
 _MASTER = "/v2/equities/master"
 _FINANCIAL = "/v2/fins/summary"
+_CALENDAR = "/v2/markets/calendar"
 
 
 @dataclass(frozen=True)
@@ -202,6 +203,16 @@ class JQuantsClient:
             "jquants-v2", latest, latest, cached.fetched_at, coverage, stale, missing,
             "stale" if stale else "empty" if not bars else "partial" if missing else "complete",
         ), status)
+
+    def calendar(self, start: date, end: date) -> TradingCalendar:
+        if start > end:
+            raise ValueError("Invalid calendar date range")
+        params = {"from": start.isoformat(), "to": end.isoformat()}
+        cached, _ = self._cached(
+            (_CALENDAR, start, end),
+            lambda: normalize_calendar(self._rows(_CALENDAR, params), start, end),
+        )
+        return cached.value
 
     def financials(self, instrument: Instrument, trading_dates):
         code = instrument.jquants_code

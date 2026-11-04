@@ -4,7 +4,7 @@ from bisect import bisect_right
 from datetime import date, datetime, time, timedelta, timezone
 from types import MappingProxyType
 
-from market_data_types import DailyBar, FinancialDisclosure, Instrument
+from market_data_types import DailyBar, FinancialDisclosure, Instrument, TradingCalendar, TradingDay
 
 
 JST = timezone(timedelta(hours=9))
@@ -104,6 +104,22 @@ def normalize_daily(rows, instrument: Instrument) -> tuple[DailyBar, ...]:
         _deduplicate(bars, lambda bar: (bar.ticker, bar.trade_date)),
         key=lambda bar: bar.trade_date,
     ))
+
+
+def normalize_calendar(rows, start: date, end: date) -> TradingCalendar:
+    parsed = []
+    for row in rows:
+        day = _date(row.get("Date"))
+        division = row.get("HolDiv")
+        if not isinstance(division, str) or division not in ("0", "1", "2", "3"):
+            raise DataQualityError("Unknown trading calendar holiday division")
+        if not start <= day <= end:
+            raise DataQualityError("Trading calendar date outside requested range")
+        parsed.append(TradingDay(day, division, division in ("1", "2")))
+    days = tuple(sorted(_deduplicate(parsed, lambda day: day.date), key=lambda day: day.date))
+    if len(days) != (end - start).days + 1:
+        raise DataQualityError("Incomplete trading calendar")
+    return TradingCalendar(start, end, days, tuple(day.date for day in days if day.is_trading_day))
 
 
 def normalize_financials(rows, instrument: Instrument, trading_dates) -> tuple[FinancialDisclosure, ...]:
